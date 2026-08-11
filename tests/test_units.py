@@ -190,6 +190,97 @@ class TestTracker(unittest.TestCase):
         self.assertEqual(len(tracker.confirmed()), 1)
 
 
+class TestDetectionFilter(unittest.TestCase):
+    """The rules that suppress false positives."""
+
+    SHAPE = (720, 1280, 3)
+
+    def setUp(self):
+        from objectlog.backends.base import DetectionFilter
+        from objectlog.tracker import Detection
+
+        self.DetectionFilter = DetectionFilter
+        self.Detection = Detection
+        # A person on the left, a car on the right, both a sane size.
+        self.detections = [
+            Detection("person", 0.9, (100.0, 100.0, 300.0, 500.0)),
+            Detection("car", 0.5, (900.0, 200.0, 1200.0, 450.0)),
+        ]
+
+    def labels(self, **kwargs):
+        filt = self.DetectionFilter(**kwargs)
+        return [d.label for d in filt.apply(self.detections, self.SHAPE)]
+
+    def test_no_rules_keeps_everything(self):
+        self.assertEqual(self.labels(), ["person", "car"])
+
+    def test_exclude_list_drops_named_classes(self):
+        # The office case: there are no cars indoors, so never log one.
+        self.assertEqual(self.labels(excluded=["car"]), ["person"])
+        self.assertEqual(self.labels(excluded=["car", "person"]), [])
+
+    def test_exclude_is_case_and_space_insensitive(self):
+        self.assertEqual(self.labels(excluded=[" Car "]), ["person"])
+
+    def test_allow_list_keeps_only_named_classes(self):
+        self.assertEqual(self.labels(allowed=["person"]), ["person"])
+
+    def test_exclude_beats_allow(self):
+        self.assertEqual(self.labels(allowed=["car"], excluded=["car"]), [])
+
+    def test_max_box_area_drops_frame_filling_detections(self):
+        huge = self.Detection("person", 0.9, (0.0, 0.0, 1280.0, 720.0))
+        filt = self.DetectionFilter(max_box_area=0.5)
+        self.assertEqual(filt.apply([huge], self.SHAPE), [])
+        # ...but leaves normally sized ones alone.
+        self.assertEqual(len(filt.apply(self.detections, self.SHAPE)), 2)
+
+    def test_min_box_area_drops_specks(self):
+        speck = self.Detection("person", 0.9, (10.0, 10.0, 20.0, 20.0))
+        filt = self.DetectionFilter(min_box_area=0.01)
+        self.assertEqual(filt.apply([speck], self.SHAPE), [])
+
+    def test_ignore_region_drops_by_box_centre(self):
+        # Mask the right-hand third of the frame, where the car sits.
+        filt = self.DetectionFilter(ignore_regions=[[0.66, 0.0, 1.0, 1.0]])
+        kept = [d.label for d in filt.apply(self.detections, self.SHAPE)]
+        self.assertEqual(kept, ["person"])
+
+    def test_ignore_region_uses_centre_not_edges(self):
+        # A box that merely overlaps the masked strip is kept; only one whose
+        # middle is inside gets dropped.
+        overlapping = self.Detection("person", 0.9, (600.0, 100.0, 1000.0, 500.0))
+        filt = self.DetectionFilter(ignore_regions=[[0.72, 0.0, 1.0, 1.0]])
+        self.assertEqual(len(filt.apply([overlapping], self.SHAPE)), 1)
+
+    def test_multiple_regions(self):
+        filt = self.DetectionFilter(ignore_regions=[[0.0, 0.0, 0.3, 1.0],
+                                                    [0.66, 0.0, 1.0, 1.0]])
+        self.assertEqual(filt.apply(self.detections, self.SHAPE), [])
+
+    def test_allows_label_matches_apply(self):
+        # The backends use allows_label() to skip work early; it must agree
+        # with what apply() would have done.
+        filt = self.DetectionFilter(allowed=["person"], excluded=["car"])
+        self.assertTrue(filt.allows_label("person"))
+        self.assertFalse(filt.allows_label("car"))
+        self.assertFalse(filt.allows_label("dog"))
+
+    def test_built_from_config(self):
+        from objectlog import config as config_mod
+        from objectlog.backends import build_filter
+
+        cfg = config_mod.load(None)
+        cfg.set("detector.exclude_classes", ["car", "truck"])
+        cfg.set("detector.ignore_regions", [[0.0, 0.8, 1.0, 1.0]])
+        cfg.set("detector.max_box_area", 0.6)
+        filt = build_filter(cfg)
+        self.assertEqual(filt.excluded, {"car", "truck"})
+        self.assertEqual(filt.ignore_regions, [(0.0, 0.8, 1.0, 1.0)])
+        self.assertEqual(filt.max_box_area, 0.6)
+        self.assertIn("excluded", filt.describe())
+
+
 class TestCamera(unittest.TestCase):
     def test_synthetic_source_produces_moving_rgb_frames(self):
         from objectlog.camera import SyntheticCamera

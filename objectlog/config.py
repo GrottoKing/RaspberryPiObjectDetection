@@ -37,9 +37,18 @@ DEFAULTS: Dict[str, Any] = {
         "input_size": 640,
         # Empty list = keep every class the model knows about.
         "classes": [],
+        # Classes to drop. Easier than an allow-list when you only want to
+        # silence a few persistent false positives.
+        "exclude_classes": [],
         # Ignore boxes smaller than this fraction of the frame area. Kills a
         # lot of far-away noise.
         "min_box_area": 0.004,
+        # ...and larger than this. A detector that has locked onto a wall or a
+        # desk usually reports something covering most of the frame.
+        "max_box_area": 1.0,
+        # Rectangles of the frame to ignore, as fractions [x0, y0, x1, y1].
+        # A detection whose centre falls inside one is discarded.
+        "ignore_regions": [],
     },
     "tracker": {
         "iou_threshold": 0.30,

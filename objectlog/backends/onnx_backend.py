@@ -19,7 +19,7 @@ from PIL import Image
 
 from ..labels import COCO_CLASSES
 from ..tracker import Detection
-from .base import DetectorBackend, nms
+from .base import DetectionFilter, DetectorBackend, nms
 
 
 def _letterbox(frame: np.ndarray, size: int, rectangular: bool = False,
@@ -58,8 +58,7 @@ class OnnxDetector(DetectorBackend):
 
     def __init__(self, model_path: str, confidence: float = 0.4,
                  iou_threshold: float = 0.45, input_size: int = 640,
-                 classes: Optional[List[str]] = None,
-                 min_box_area: float = 0.0):
+                 detection_filter: Optional[DetectionFilter] = None):
         try:
             import onnxruntime as ort  # noqa: PLC0415
         except ImportError as exc:
@@ -92,14 +91,16 @@ class OnnxDetector(DetectorBackend):
 
         self.confidence = confidence
         self.iou_threshold = iou_threshold
-        self.min_box_area = min_box_area
+        self.filter = detection_filter or DetectionFilter()
         self.class_names = self._read_class_names()
-        self.allowed = {c.lower() for c in (classes or [])}
         self.description = (
             f"onnxruntime · {os.path.basename(model_path)} · "
             f"{self.input_size}px{' dynamic' if self.dynamic else ''} · "
-            f"{len(self.class_names)} classes"
+            f"conf {self.confidence:g} · {len(self.class_names)} classes"
         )
+        extra = self.filter.describe()
+        if extra:
+            self.description += f" · {extra}"
 
     def _read_class_names(self) -> List[str]:
         """Ultralytics stamps the class map into the ONNX metadata."""
@@ -169,23 +170,20 @@ class OnnxDetector(DetectorBackend):
         ], axis=1)
 
         detections: List[Detection] = []
-        frame_area = float(width * height)
         for class_id in np.unique(class_ids):
             mask = class_ids == class_id
             label = (self.class_names[int(class_id)]
                      if int(class_id) < len(self.class_names)
                      else f"class_{int(class_id)}")
-            if self.allowed and label.lower() not in self.allowed:
+            # Skip NMS entirely for classes we are going to throw away anyway.
+            if not self.filter.allows_label(label):
                 continue
             class_boxes, class_scores = boxes[mask], scores[mask]
             for index in nms(class_boxes, class_scores, self.iou_threshold):
                 box = class_boxes[index]
-                area = (box[2] - box[0]) * (box[3] - box[1])
-                if frame_area > 0 and area / frame_area < self.min_box_area:
-                    continue
                 detections.append(Detection(
                     label=label,
                     confidence=float(class_scores[index]),
                     box=(float(box[0]), float(box[1]), float(box[2]), float(box[3])),
                 ))
-        return detections
+        return self.filter.apply(detections, frame.shape)

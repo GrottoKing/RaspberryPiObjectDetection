@@ -28,11 +28,32 @@ detector:
   iou: 0.45
   input_size: 640
   # Only log these classes. Empty means everything the model knows.
-  # classes: [person, cat, dog, car]
+  # Indoors, an allow-list is by far the most effective anti-nonsense setting:
+  #   classes: [person, cat, dog, cup, bottle, laptop, cell phone, keyboard,
+  #             mouse, book, chair, tv, backpack, scissors]
   classes: []
+
+  # ...or, if you would rather keep everything except a few offenders, name
+  # them here. Run `python3 scripts/tune.py` to find out which ones your room
+  # actually produces. A COCO model indoors loves to see cars in furniture:
+  #   exclude_classes: [car, truck, bus, train, boat, airplane, bench]
+  exclude_classes: []
+
   # Ignore boxes smaller than this fraction of the frame -- kills distant
   # noise, e.g. a "person" made of six pixels at the end of the garden.
   min_box_area: 0.004
+  # ...and bigger than this. A detector that has locked onto a desk or a wall
+  # usually reports a box covering most of the view. 0.45 is a good value
+  # indoors if something large and static keeps being logged.
+  max_box_area: 1.0
+
+  # Rectangles to ignore, as fractions of the frame [x0, y0, x1, y1].
+  # Anything whose centre lands inside one is discarded. Use this for a patch
+  # that reliably fools the detector -- a wood-grain desktop, a patterned rug.
+  # Note the trade-off: real objects in that area are ignored too.
+  #   ignore_regions:
+  #     - [0.0, 0.75, 1.0, 1.0]    # the bottom quarter (your desk)
+  ignore_regions: []
 
 tracker:
   iou_threshold: 0.30

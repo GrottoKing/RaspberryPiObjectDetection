@@ -73,15 +73,123 @@ get `Person with dark hair wearing blue`. The garment *type* ("jacket" vs
 "shirt") is not classified, because nothing in this stack can tell those apart
 reliably, and inventing it would make the log untrustworthy.
 
-### Want better descriptions?
+---
 
-Swap in a bigger model — same code, just a different file:
+## When it sees things that aren't there
+
+A nano-sized COCO model will confidently hallucinate. Indoors it is especially
+fond of finding cars in filing cabinets and people in wood grain. This is the
+model's limit, not a bug in the plumbing — but it is very fixable.
+
+### First, measure. Don't guess.
 
 ```bash
-python3 scripts/fetch_model.py --model yolo11s   # more accurate, ~2-3x slower
+sudo systemctl stop objectlog        # free the camera
+python3 scripts/tune.py
 ```
 
-Then set `detector.model: models/yolo11s.onnx` in `config.yaml`.
+Point the camera at the room as it normally sits, with nothing in it you
+actually want logged. Anything it reports is by definition a false positive.
+It samples 20 frames, then prints what it saw, at what confidence, how a higher
+threshold would change things, and a `config.yaml` block you can paste in.
+
+```
+class            frames    max  median  typical size
+------------------------------------------------------------------------
+car                  14   0.58    0.49          22.1%
+person                9   0.71    0.63          31.4%
+```
+
+That tells you something a guess cannot: whether raising the threshold is even
+capable of fixing it. If a false "person" peaks at 0.71, no threshold below
+that will clear it without also throwing away real people.
+
+### Then apply the fix that matches
+
+In rough order of effectiveness:
+
+**1. Exclude the classes that cannot be there.** The single most reliable fix.
+There are no cars in your office, so no confidence score should ever produce
+one:
+
+```yaml
+detector:
+  exclude_classes: [car, truck, bus, train, boat, airplane]
+```
+
+Or invert it, which is stronger still — list only what you care about:
+
+```yaml
+detector:
+  classes: [person, cat, dog, cup, bottle, laptop, cell phone, book, chair]
+```
+
+**2. Use a bigger model.** `yolo11n` is the smallest one there is; false
+positives are the price. `yolo11s` has roughly three times the parameters and
+noticeably fewer of them:
+
+```bash
+python3 scripts/fetch_model.py --model yolo11s
+```
+
+```yaml
+detector:
+  model: models/yolo11s.onnx
+```
+
+It is about 2–3× slower per frame. At `fps_limit: 4` on a Pi 5 there is room;
+on a Pi 4, drop `fps_limit` to 1–2 at the same time.
+
+**3. Raise the confidence threshold** — but only as far as `tune.py` says is
+useful:
+
+```yaml
+detector:
+  confidence: 0.55
+```
+
+**4. Cap the box size.** A detector that has locked onto a desk usually reports
+a box covering a third of the view. Real objects at desk distance rarely do:
+
+```yaml
+detector:
+  max_box_area: 0.45
+```
+
+**5. Mask the offending area.** Last resort, because you lose real detections
+there too:
+
+```yaml
+detector:
+  ignore_regions:
+    - [0.0, 0.75, 1.0, 1.0]     # bottom quarter of the frame
+```
+
+**6. Make the scene easier.** More light helps more than any setting: these
+models were trained on well-exposed photographs, and a dim, noisy frame is
+outside what they have seen. Aiming the camera so a large textured surface does
+not dominate the view helps too — a desktop filling the frame is exactly the
+kind of thing that gets misread.
+
+After any change: `sudo systemctl restart objectlog`.
+
+### What about actually training it?
+
+You can fine-tune YOLO on your own images, and the specific technique for this
+problem is to include "negative" images — photos of your office with no
+labelled objects — so the model learns that your desk is background. It works.
+
+It also means labelling a few hundred images, access to a GPU for a few hours,
+and a retraining loop every time the room changes. For suppressing known-wrong
+classes in one room, an `exclude_classes` line gets you the same outcome in
+thirty seconds. Fine-tuning earns its keep when you need to detect something
+COCO does not know about at all — a specific product, a particular animal —
+not when you need it to stop seeing cars indoors.
+
+If you do want a genuine capability jump rather than a tuning fix, the hardware
+route is a **Hailo AI HAT** (26 TOPS, around £70): it runs far larger models in
+real time on a Pi 5, and the accuracy difference is a different category
+entirely from anything in this section.
 
 ---
 
@@ -122,7 +230,10 @@ The knobs you are most likely to want:
 | `camera.fps_limit` | Lower on a Pi 4/Zero (try `2`), raise on a Pi 5 |
 | `detector.confidence` | Log full of nonsense → raise to `0.5`+. Missing obvious things → lower to `0.3` |
 | `detector.classes` | Only care about some things → `[person, cat, dog]` |
+| `detector.exclude_classes` | Silence specific false positives → `[car, truck, bus]` |
 | `detector.min_box_area` | Distant specks being logged → raise it |
+| `detector.max_box_area` | Something large and static keeps being logged → lower to `0.45` |
+| `detector.ignore_regions` | One patch of the view keeps fooling it → mask it |
 | `tracker.min_hits` | Flickery one-off sightings → raise to `5` |
 | `storage.max_entries` | How much history to keep before old rows and their images are deleted |
 
@@ -247,6 +358,6 @@ that is the sensor, not the code.
 python3 -m unittest discover -s tests -v
 ```
 
-55 tests, no camera or model required — the ONNX decoding is checked against a
+67 tests, no camera or model required — the ONNX decoding is checked against a
 synthetic model with planted detections, and the pipeline runs end to end on
 the synthetic camera.

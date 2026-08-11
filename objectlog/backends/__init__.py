@@ -9,9 +9,21 @@ from __future__ import annotations
 
 import os
 
-from .base import DetectorBackend, nms  # noqa: F401  (re-exported)
+from .base import DetectionFilter, DetectorBackend, nms  # noqa: F401
 
-__all__ = ["DetectorBackend", "nms", "build"]
+__all__ = ["DetectionFilter", "DetectorBackend", "nms", "build",
+           "build_filter"]
+
+
+def build_filter(cfg) -> DetectionFilter:
+    """Assemble the shared detection filter from config."""
+    return DetectionFilter(
+        allowed=list(cfg.get("detector.classes", []) or []),
+        excluded=list(cfg.get("detector.exclude_classes", []) or []),
+        min_box_area=float(cfg.get("detector.min_box_area", 0.0)),
+        max_box_area=float(cfg.get("detector.max_box_area", 1.0)),
+        ignore_regions=list(cfg.get("detector.ignore_regions", []) or []),
+    )
 
 
 def build(cfg) -> DetectorBackend:
@@ -20,8 +32,7 @@ def build(cfg) -> DetectorBackend:
         "confidence": float(cfg.get("detector.confidence", 0.4)),
         "iou_threshold": float(cfg.get("detector.iou", 0.45)),
         "input_size": int(cfg.get("detector.input_size", 640)),
-        "classes": list(cfg.get("detector.classes", []) or []),
-        "min_box_area": float(cfg.get("detector.min_box_area", 0.0)),
+        "detection_filter": build_filter(cfg),
     }
     model = str(cfg.get("detector.model", "models/yolo11n.onnx"))
 
@@ -50,8 +61,7 @@ def build(cfg) -> DetectorBackend:
             from .mock_backend import MockDetector
 
             return MockDetector(confidence=kwargs["confidence"],
-                                classes=kwargs["classes"],
-                                min_box_area=kwargs["min_box_area"])
+                                detection_filter=kwargs["detection_filter"])
         except Exception as exc:
             errors.append(f"{candidate}: {exc}")
             if requested != "auto":

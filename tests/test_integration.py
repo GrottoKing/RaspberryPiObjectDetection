@@ -104,11 +104,17 @@ class TestOnnxDecoding(unittest.TestCase):
         onnx.save(model, path)
 
     def _detector(self, **kwargs):
+        from objectlog.backends.base import DetectionFilter
         from objectlog.backends.onnx_backend import OnnxDetector
 
+        filter_keys = ("allowed", "excluded", "min_box_area", "max_box_area",
+                       "ignore_regions")
+        filter_kwargs = {k: kwargs.pop(k) for k in filter_keys if k in kwargs}
         params = dict(confidence=0.4, iou_threshold=0.45, input_size=640)
         params.update(kwargs)
-        return OnnxDetector(self.model_path, **params)
+        return OnnxDetector(self.model_path,
+                            detection_filter=DetectionFilter(**filter_kwargs),
+                            **params)
 
     def test_boxes_map_back_to_original_pixels(self):
         detector = self._detector()
@@ -135,7 +141,7 @@ class TestOnnxDecoding(unittest.TestCase):
         self.assertEqual(labels, {"person", "car"})
 
     def test_class_filter(self):
-        detector = self._detector(confidence=0.05, classes=["car"])
+        detector = self._detector(confidence=0.05, allowed=["car"])
         labels = {d.label for d in detector.detect(
             np.zeros((720, 1280, 3), dtype=np.uint8))}
         self.assertEqual(labels, {"car"})

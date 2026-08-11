@@ -12,7 +12,7 @@ from typing import List, Optional
 import numpy as np
 
 from ..tracker import Detection
-from .base import DetectorBackend
+from .base import DetectionFilter, DetectorBackend
 
 
 class UltralyticsDetector(DetectorBackend):
@@ -20,8 +20,7 @@ class UltralyticsDetector(DetectorBackend):
 
     def __init__(self, model_path: str = "yolo11n.pt", confidence: float = 0.4,
                  iou_threshold: float = 0.45, input_size: int = 640,
-                 classes: Optional[List[str]] = None,
-                 min_box_area: float = 0.0):
+                 detection_filter: Optional[DetectionFilter] = None):
         try:
             from ultralytics import YOLO  # noqa: PLC0415
         except ImportError as exc:
@@ -31,9 +30,12 @@ class UltralyticsDetector(DetectorBackend):
         self.confidence = confidence
         self.iou_threshold = iou_threshold
         self.input_size = int(input_size)
-        self.min_box_area = min_box_area
-        self.allowed = {c.lower() for c in (classes or [])}
-        self.description = f"ultralytics · {model_path} · {self.input_size}px"
+        self.filter = detection_filter or DetectionFilter()
+        self.description = (f"ultralytics · {model_path} · {self.input_size}px "
+                            f"· conf {self.confidence:g}")
+        extra = self.filter.describe()
+        if extra:
+            self.description += f" · {extra}"
 
     def detect(self, frame: np.ndarray) -> List[Detection]:
         results = self.model.predict(
@@ -44,17 +46,11 @@ class UltralyticsDetector(DetectorBackend):
             return []
         result = results[0]
         names = result.names
-        frame_area = float(frame.shape[0] * frame.shape[1])
 
         detections: List[Detection] = []
         for box in result.boxes:
             label = str(names[int(box.cls)])
-            if self.allowed and label.lower() not in self.allowed:
-                continue
             x0, y0, x1, y1 = [float(v) for v in box.xyxy[0].tolist()]
-            area = (x1 - x0) * (y1 - y0)
-            if frame_area > 0 and area / frame_area < self.min_box_area:
-                continue
             detections.append(Detection(
                 label=label, confidence=float(box.conf), box=(x0, y0, x1, y1)))
-        return detections
+        return self.filter.apply(detections, frame.shape)

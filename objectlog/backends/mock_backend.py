@@ -13,7 +13,7 @@ from typing import List, Optional
 import numpy as np
 
 from ..tracker import Detection
-from .base import DetectorBackend
+from .base import DetectionFilter, DetectorBackend
 
 # Blocks the synthetic camera draws, in the order it draws them.
 _PRETEND_LABELS = ["person", "car", "potted plant", "cup", "dog"]
@@ -23,17 +23,15 @@ class MockDetector(DetectorBackend):
     name = "mock"
     description = "mock detector (no model) · demo mode"
 
-    def __init__(self, confidence: float = 0.4, classes: Optional[List[str]] = None,
-                 min_box_area: float = 0.0, **_ignored):
+    def __init__(self, confidence: float = 0.4,
+                 detection_filter: Optional[DetectionFilter] = None, **_ignored):
         self.confidence = confidence
-        self.allowed = {c.lower() for c in (classes or [])}
-        self.min_box_area = min_box_area
+        self.filter = detection_filter or DetectionFilter()
         self._frame_index = 0
 
     def detect(self, frame: np.ndarray) -> List[Detection]:
         self._frame_index += 1
         height, width = frame.shape[:2]
-        frame_area = float(width * height)
 
         # Find contiguous saturated regions by scanning a coarse grid -- crude,
         # but it locates the synthetic camera's blocks without needing OpenCV.
@@ -67,14 +65,9 @@ class MockDetector(DetectorBackend):
                 cols = [p[1] for p in pixels]
                 box = (float(min(cols) * step), float(min(rows) * step),
                        float((max(cols) + 1) * step), float((max(rows) + 1) * step))
-                area = (box[2] - box[0]) * (box[3] - box[1])
-                if frame_area > 0 and area / frame_area < self.min_box_area:
-                    continue
                 # Stable label per blob position, so tracks stay coherent.
                 label = _PRETEND_LABELS[len(detections) % len(_PRETEND_LABELS)]
-                if self.allowed and label not in self.allowed:
-                    continue
                 detections.append(Detection(
                     label=label, confidence=0.72 + 0.2 * ((self._frame_index % 5) / 5),
                     box=box))
-        return detections
+        return self.filter.apply(detections, frame.shape)
