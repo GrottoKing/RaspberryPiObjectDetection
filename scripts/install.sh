@@ -33,6 +33,18 @@ echo "==> Fetching a detection model"
 }
 
 echo
+echo "==> Checking for a Hailo accelerator"
+if command -v hailortcli >/dev/null 2>&1 && hailortcli fw-control identify >/dev/null 2>&1; then
+  echo "    Hailo device found. It will be used automatically."
+  echo "    Verify with: python3 scripts/hailo_probe.py"
+elif lspci 2>/dev/null | grep -qi hailo; then
+  echo "    A Hailo device is on the PCIe bus but the runtime is missing:"
+  echo "        sudo apt install -y hailo-all && sudo reboot"
+else
+  echo "    None detected -- using CPU inference."
+fi
+
+echo
 echo "==> Checking the camera"
 if ./.venv/bin/python -c "import picamera2" 2>/dev/null; then
   echo "    picamera2 OK"

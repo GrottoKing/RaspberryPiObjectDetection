@@ -18,10 +18,23 @@ camera:
   vflip: false
 
 detector:
-  # auto = onnx if a model is present, else ultralytics, else the mock
-  # detector so the page still does something.
+  # auto = Hailo accelerator if present, else onnx, else ultralytics, else the
+  # mock detector so the page still does something.
   backend: auto
   model: models/yolo11n.onnx
+
+  # --- Hailo AI HAT+ / AI Kit -------------------------------------------
+  # Only used by the hailo backend. See scripts/hailo_probe.py.
+  # Leave empty to auto-discover a .hef in /usr/share/hailo-models and the
+  # other usual places.
+  hef: ""
+  # Class names for that model, in training order. Empty = COCO's 80, which is
+  # right for the stock YOLO builds.
+  labels: []
+  # Letterbox before inference (preserve aspect ratio). Set false if boxes come
+  # out consistently offset or squashed -- it depends how the .hef was built.
+  hailo_letterbox: true
+  # ----------------------------------------------------------------------
   # Raise towards 0.6 if the log fills with nonsense; lower towards 0.3 if it
   # is missing obvious things.
   confidence: 0.40

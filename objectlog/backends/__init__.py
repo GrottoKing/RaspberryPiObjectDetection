@@ -37,7 +37,10 @@ def build(cfg) -> DetectorBackend:
     model = str(cfg.get("detector.model", "models/yolo11n.onnx"))
 
     order = {
-        "auto": ["onnx", "ultralytics", "mock"],
+        # Hailo first: if the accelerator is there it is far faster and more
+        # accurate than anything the CPU can do, so prefer it silently.
+        "auto": ["hailo", "onnx", "ultralytics", "mock"],
+        "hailo": ["hailo"],
         "onnx": ["onnx"],
         "ultralytics": ["ultralytics"],
         "mock": ["mock"],
@@ -48,6 +51,16 @@ def build(cfg) -> DetectorBackend:
     errors = []
     for candidate in order:
         try:
+            if candidate == "hailo":
+                from .hailo_backend import HailoDetector
+
+                return HailoDetector(
+                    hef_path=cfg.get("detector.hef"),
+                    confidence=kwargs["confidence"],
+                    detection_filter=kwargs["detection_filter"],
+                    labels=cfg.get("detector.labels") or None,
+                    letterbox=bool(cfg.get("detector.hailo_letterbox", True)),
+                )
             if candidate == "onnx":
                 from .onnx_backend import OnnxDetector
 
@@ -66,7 +79,11 @@ def build(cfg) -> DetectorBackend:
             errors.append(f"{candidate}: {exc}")
             if requested != "auto":
                 raise
-            print(f"[detector] {candidate} unavailable -- {exc}")
+            if candidate == "hailo":
+                # Most Pis have no accelerator; that is not worth a paragraph.
+                print("[detector] no Hailo accelerator in use, falling back")
+            else:
+                print(f"[detector] {candidate} unavailable -- {exc}")
 
     raise RuntimeError("no detector backend available: " + "; ".join(errors))
 

@@ -29,9 +29,17 @@ DEFAULTS: Dict[str, Any] = {
         "folder": "samples",
     },
     "detector": {
-        # auto | ultralytics | onnx | mock
+        # auto | hailo | onnx | ultralytics | mock
         "backend": "auto",
         "model": "models/yolo11n.onnx",
+        # Hailo accelerator (AI HAT+ / AI Kit) settings. Leave hef empty to
+        # auto-discover a compiled model in the usual system locations.
+        "hef": "",
+        # Class names for the .hef, in training order. Empty = COCO's 80.
+        "labels": [],
+        # Letterbox before inference (preserve aspect). Set false if boxes come
+        # out consistently offset or stretched.
+        "hailo_letterbox": True,
         "confidence": 0.40,
         "iou": 0.45,
         "input_size": 640,

@@ -41,9 +41,10 @@ def parse_args(argv=None) -> argparse.Namespace:
                         choices=["auto", "picamera2", "opencv", "folder", "synthetic"],
                         help="frame source")
     parser.add_argument("--folder", help="image folder for --camera folder")
-    parser.add_argument("--backend", choices=["auto", "onnx", "ultralytics", "mock"],
+    parser.add_argument("--backend", choices=["auto", "hailo", "onnx", "ultralytics", "mock"],
                         help="detector backend")
     parser.add_argument("--model", help="path to the detection model")
+    parser.add_argument("--hef", help="path to a Hailo .hef (accelerator)")
     parser.add_argument("--conf", type=float, help="detection confidence threshold")
     parser.add_argument("--fps", type=float, help="max detections per second")
     parser.add_argument("--rotation", type=int, choices=[0, 90, 180, 270],
@@ -67,6 +68,7 @@ def build_config(args: argparse.Namespace):
         "camera.folder": args.folder,
         "detector.backend": args.backend,
         "detector.model": args.model,
+        "detector.hef": args.hef,
         "detector.confidence": args.conf,
         "web.host": args.host,
         "web.port": args.port,

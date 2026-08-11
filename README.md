@@ -75,6 +75,103 @@ reliably, and inventing it would make the log untrustworthy.
 
 ---
 
+## Using a Hailo AI HAT+ / AI Kit
+
+If you have a Hailo accelerator, use it. It runs models far larger than the Pi's
+CPU can manage, in a fraction of the time, and the false positives that plague
+`yolo11n` largely go away because you can afford a proper model.
+
+### 1. Install the runtime
+
+```bash
+sudo apt update && sudo apt install -y hailo-all
+sudo reboot
+```
+
+For full bandwidth to the accelerator, enable PCIe Gen 3 — add this to
+`/boot/firmware/config.txt` and reboot:
+
+```
+dtparam=pciex1_gen=3
+```
+
+### 2. Check what you have
+
+```bash
+sudo systemctl stop objectlog     # the device allows one user at a time
+python3 scripts/hailo_probe.py
+```
+
+This reports the firmware, the PCIe link, whether the Python bindings import,
+which compiled models (`.hef`) are on the system, and — importantly — the exact
+shape of what one inference returns. **If the Hailo backend misbehaves, send
+this output.** A model's result layout is fixed when it is compiled, so this is
+the only reliable way to know how to read it.
+
+A common trap: the bindings are installed by `apt`, into the system Python. If
+your virtualenv cannot see system packages, `import hailo_platform` fails.
+`scripts/install.sh` creates it correctly; a venv made by hand may not:
+
+```bash
+python3 -m venv --system-site-packages .venv
+```
+
+### 3. Turn it on
+
+```yaml
+detector:
+  backend: hailo
+  hef: /usr/share/hailo-models/yolov8m.hef   # or leave empty to auto-discover
+  confidence: 0.45
+```
+
+`backend: auto` also tries Hailo first and falls back to the CPU quietly, so
+you can leave it on auto if you prefer.
+
+### Getting models
+
+`hailo-all` installs some into `/usr/share/hailo-models/`. More come from the
+[Hailo model zoo](https://github.com/hailo-ai/hailo_model_zoo). **Match your
+chip**: the AI HAT+ 26 TOPS is a **Hailo-8**, the 13 TOPS version and the older
+AI Kit are **Hailo-8L**, and a model compiled for one will not run on the
+other. `hailortcli fw-control identify` tells you which you have.
+
+With a Hailo-8 there is no reason to run a nano model — `yolov8m` or larger is
+comfortably real-time, and that is where the accuracy gain comes from.
+
+Once it is working, raise the frame rate too. `fps_limit: 4` exists because CPU
+inference is slow; the accelerator has no such problem, and a higher rate means
+objects passing quickly are less likely to be missed:
+
+```yaml
+camera:
+  fps_limit: 15
+```
+
+One thing that does *not* change: the tracker still collapses an object into a
+single log entry however many frames it appears in, so a faster rate makes the
+log more accurate, not longer.
+
+### If boxes land in the wrong place
+
+The one thing that varies between compiled models is whether they expect a
+letterboxed frame (aspect preserved, grey bars) or a stretched one. If
+detections are consistently offset or squashed, flip it:
+
+```yaml
+detector:
+  hailo_letterbox: false
+```
+
+### Honest status
+
+The decoding logic is unit-tested against every output shape HailoRT is known
+to produce. **The device I/O is not** — it was written without access to
+hardware, so treat the first run as a test. `hailo_probe.py` exists to make any
+mismatch obvious rather than silent.
+
+---
+
 ## When it sees things that aren't there
 
 A nano-sized COCO model will confidently hallucinate. Indoors it is especially
@@ -284,8 +381,9 @@ camera ──► detector ──► tracker ──► describe ──► SQLite 
 - **`objectlog/camera.py`** — frame sources: `picamera2` (the real one),
   `opencv` (USB webcams), `folder` (replay photos), `synthetic` (test pattern).
   `auto` tries them in order, so it always starts.
-- **`objectlog/backends/`** — detectors. `onnx` (recommended: small wheel, no
-  PyTorch), `ultralytics` (if you already have it), `mock` (no model needed).
+- **`objectlog/backends/`** — detectors. `hailo` (AI HAT+ accelerator), `onnx`
+  (recommended on CPU: small wheel, no PyTorch), `ultralytics` (if you already
+  have it), `mock` (no model needed).
 - **`objectlog/tracker.py`** — greedy IoU tracking. This is what turns "person
   seen in 40 consecutive frames" into one log entry with a duration.
 - **`objectlog/describe.py`** — the colour/attribute pass.
@@ -305,6 +403,7 @@ Rough guide at 1280x720:
 
 | Board | Detection time | Sensible `fps_limit` |
 |---|---|---|
+| Pi 5 + Hailo-8 | ~10–20ms | 10–15 |
 | Pi 5 | ~120–200ms | 3–5 |
 | Pi 4 | ~400–600ms | 1–2 |
 | Pi Zero 2 W | ~1.5–2s | 0.5 |
@@ -360,6 +459,6 @@ that is the sensor, not the code.
 python3 -m unittest discover -s tests -v
 ```
 
-67 tests, no camera or model required — the ONNX decoding is checked against a
+88 tests, no camera, model or accelerator required — the ONNX decoding is checked against a
 synthetic model with planted detections, and the pipeline runs end to end on
 the synthetic camera.
