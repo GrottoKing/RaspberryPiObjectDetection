@@ -131,16 +131,31 @@ Run `python3 run.py --help` for the full list.
 
 ---
 
-## Running it as a service
-
-So it starts on boot and restarts if it falls over:
+## Starting on boot
 
 ```bash
-sudo cp scripts/objectlog.service /etc/systemd/system/
-# edit User= and the two paths inside if you did not clone to /home/pi
-sudo systemctl enable --now objectlog
-journalctl -u objectlog -f      # watch the logs
+sudo bash scripts/install-service.sh
 ```
+
+That works out your username and the repo path itself, adds you to the `video`
+group if needed, installs a systemd service, starts it, and then tells you
+whether it actually came up — printing the log if it did not.
+
+From then on it starts at boot and restarts by itself if it crashes.
+
+```bash
+journalctl -u objectlog -f          # watch what it is doing
+sudo systemctl restart objectlog    # after changing config.yaml
+sudo systemctl stop objectlog
+sudo systemctl disable objectlog    # stop starting on boot
+```
+
+Note that the service and a hand-started `run.py` will fight over the port. If
+you want to run it manually for a bit, `sudo systemctl stop objectlog` first.
+
+`scripts/objectlog.service` is the plain template, if you would rather install
+it by hand — it assumes user `pi` and `/home/pi/RaspberryPiObjectDetection`, so
+edit `User=` and the two paths to match your setup.
 
 ---
 

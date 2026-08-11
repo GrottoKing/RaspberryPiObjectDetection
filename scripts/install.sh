@@ -50,12 +50,7 @@ Done. Start it with:
 
 Then open the address it prints from any device on your network.
 
-To run it on boot:
+To start it automatically on every boot:
 
-    sudo cp scripts/objectlog.service /etc/systemd/system/
-    sudo sed -i "s|/home/pi/RaspberryPiObjectDetection|$ROOT|g" \\
-        /etc/systemd/system/objectlog.service
-    sudo sed -i "s|^User=.*|User=$USER|" /etc/systemd/system/objectlog.service
-    sudo systemctl enable --now objectlog
-    systemctl status objectlog
+    sudo bash scripts/install-service.sh
 EOF
