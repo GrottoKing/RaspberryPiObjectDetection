@@ -60,11 +60,14 @@ DEFAULTS: Dict[str, Any] = {
     },
     "tracker": {
         "iou_threshold": 0.30,
-        # Frames an object can go unseen before its track is closed.
-        "max_missing": 12,
-        # Frames an object must be seen for before it earns a log entry.
-        # Higher = fewer phantom sightings.
+        # Seconds an object can go unseen before its entry is closed. In
+        # seconds rather than frames so that changing fps_limit does not
+        # silently change how readily an object is re-logged as a new one.
+        "max_missing_seconds": 2.0,
+        # An object must be seen this many frames AND for this long before it
+        # earns a log entry. Raise either if you get flickery one-off entries.
         "min_hits": 3,
+        "min_seconds": 0.4,
     },
     "storage": {
         "db_path": "data/objectlog.db",

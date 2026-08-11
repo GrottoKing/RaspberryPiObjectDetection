@@ -63,11 +63,22 @@ class Detection:
 
 
 class Tracker:
-    def __init__(self, iou_threshold: float = 0.3, max_missing: int = 12,
-                 min_hits: int = 3):
+    """Groups detections across frames into one entry per real object.
+
+    Thresholds are in *seconds*, not frames. They were frame counts once, which
+    quietly changed meaning whenever the frame rate did -- moving from 4fps to
+    15fps shrank the tolerance for a missed detection from 3 seconds to 0.8,
+    and a borderline detection that flickers would then be logged over and over
+    as a "new" object. Wall-clock is the unit that actually matters here.
+    """
+
+    def __init__(self, iou_threshold: float = 0.3,
+                 max_missing_seconds: float = 2.0, min_hits: int = 3,
+                 min_seconds: float = 0.4):
         self.iou_threshold = iou_threshold
-        self.max_missing = max_missing
+        self.max_missing_seconds = float(max_missing_seconds)
         self.min_hits = min_hits
+        self.min_seconds = float(min_seconds)
         self.tracks: Dict[int, Track] = {}
         self._ids = itertools.count(1)
 
@@ -127,15 +138,20 @@ class Tracker:
             if track_id in used_tracks or track_id in fresh:
                 continue  # matched this frame, or created this frame
             track.missing += 1
-            if track.missing > self.max_missing:
+            if now - track.last_seen > self.max_missing_seconds:
                 closed.append(self.tracks.pop(track_id))
 
         active = [t for t in self.tracks.values() if t.missing == 0]
         return active, closed
 
     def confirmed(self) -> List[Track]:
-        """Tracks seen often enough to be believed."""
-        return [t for t in self.tracks.values() if t.hits >= self.min_hits]
+        """Tracks seen often enough, and for long enough, to be believed.
+
+        The frame count alone is not enough: at 15fps three frames is a fifth
+        of a second, which a flicker easily clears.
+        """
+        return [t for t in self.tracks.values()
+                if t.hits >= self.min_hits and t.age >= self.min_seconds]
 
     def flush(self) -> List[Track]:
         """Close every track (used at shutdown)."""

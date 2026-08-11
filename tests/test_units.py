@@ -148,7 +148,8 @@ class TestTracker(unittest.TestCase):
         self.assertEqual(iou((0, 0, 10, 10), (20, 20, 30, 30)), 0.0)
 
     def test_same_object_keeps_one_track(self):
-        tracker = Tracker(iou_threshold=0.3, max_missing=2, min_hits=2)
+        tracker = Tracker(iou_threshold=0.3, max_missing_seconds=2.0,
+                          min_hits=2, min_seconds=0.0)
         ids = set()
         for offset in range(6):
             box = (10.0 + offset, 10.0, 60.0 + offset, 80.0)
@@ -171,18 +172,50 @@ class TestTracker(unittest.TestCase):
         active, _ = tracker.update([Detection("dog", 0.9, (0, 0, 50, 50))])
         self.assertEqual(len(tracker.tracks), 2)
 
-    def test_track_closes_after_max_missing(self):
-        tracker = Tracker(max_missing=2, min_hits=1)
+    def test_track_closes_once_unseen_for_long_enough(self):
+        # Thresholds are wall-clock, so this is driven by elapsed time rather
+        # than a frame count -- which is the whole point of the change.
+        tracker = Tracker(max_missing_seconds=0.15, min_hits=1, min_seconds=0.0)
         tracker.update([Detection("cup", 0.8, (0, 0, 20, 20))])
-        closed_total = []
-        for _ in range(4):
-            _, closed = tracker.update([])
-            closed_total.extend(closed)
-        self.assertEqual(len(closed_total), 1)
+
+        _, closed = tracker.update([])
+        self.assertEqual(closed, [], "should survive a brief gap")
+        self.assertEqual(len(tracker.tracks), 1)
+
+        time.sleep(0.2)
+        _, closed = tracker.update([])
+        self.assertEqual(len(closed), 1)
         self.assertEqual(tracker.tracks, {})
 
+    def test_frame_rate_does_not_change_the_tolerance(self):
+        """A fast loop must not close tracks sooner than a slow one.
+
+        This was a real bug: max_missing counted frames, so raising fps_limit
+        from 4 to 15 cut the tolerance from 3 seconds to 0.8 and a flickering
+        detection got logged repeatedly as new objects.
+        """
+        for frames_per_gap in (2, 30):     # a slow loop and a fast one
+            tracker = Tracker(max_missing_seconds=0.3, min_hits=1,
+                              min_seconds=0.0)
+            tracker.update([Detection("cup", 0.8, (0, 0, 20, 20))])
+            for _ in range(frames_per_gap):
+                _, closed = tracker.update([])
+                self.assertEqual(closed, [],
+                                 f"closed too early at {frames_per_gap} frames")
+            self.assertEqual(len(tracker.tracks), 1)
+
+    def test_min_seconds_filters_brief_flickers(self):
+        tracker = Tracker(min_hits=1, min_seconds=0.2)
+        for _ in range(5):
+            tracker.update([Detection("cup", 0.8, (0, 0, 20, 20))])
+        self.assertEqual(tracker.confirmed(), [],
+                         "five fast frames is still only milliseconds")
+        time.sleep(0.25)
+        tracker.update([Detection("cup", 0.8, (0, 0, 20, 20))])
+        self.assertEqual(len(tracker.confirmed()), 1)
+
     def test_min_hits_filters_flickers(self):
-        tracker = Tracker(min_hits=3)
+        tracker = Tracker(min_hits=3, min_seconds=0.0)
         tracker.update([Detection("cup", 0.8, (0, 0, 20, 20))])
         self.assertEqual(tracker.confirmed(), [])
         tracker.update([Detection("cup", 0.8, (0, 0, 20, 20))])

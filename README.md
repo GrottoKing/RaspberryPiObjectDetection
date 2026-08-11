@@ -448,6 +448,8 @@ The knobs you are most likely to want:
 | `detector.max_box_area` | Something large and static keeps being logged → lower to `0.45` |
 | `detector.ignore_regions` | One patch of the view keeps fooling it → mask it |
 | `tracker.min_hits` | Flickery one-off sightings → raise to `5` |
+| `tracker.min_seconds` | Same object logged repeatedly → raise to `1.0` |
+| `tracker.max_missing_seconds` | Object re-logged when it briefly vanishes → raise to `4` |
 | `storage.max_entries` | How much history to keep before old rows and their images are deleted |
 
 Command-line flags override the file: `run.py --fps 2 --conf 0.5 --port 8080`.
@@ -573,6 +575,6 @@ that is the sensor, not the code.
 python3 -m unittest discover -s tests -v
 ```
 
-88 tests, no camera, model or accelerator required — the ONNX decoding is checked against a
+105 tests, no camera, model or accelerator required — the ONNX decoding is checked against a
 synthetic model with planted detections, and the pipeline runs end to end on
 the synthetic camera.

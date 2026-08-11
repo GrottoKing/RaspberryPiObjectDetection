@@ -35,6 +35,9 @@ def temp_config(directory, **overrides):
     cfg.set("camera.fps_limit", 0)
     cfg.set("detector.backend", "mock")
     cfg.set("tracker.min_hits", 2)
+    # These tests step frames in a tight loop, so no wall-clock time passes.
+    # The time-based gates would never open; they have their own tests.
+    cfg.set("tracker.min_seconds", 0.0)
     for key, value in overrides.items():
         cfg.set(key.replace("__", "."), value)
     return cfg

@@ -39,8 +39,9 @@ class Pipeline:
         self.detector = build_backend(cfg)
         self.tracker = Tracker(
             iou_threshold=float(cfg.get("tracker.iou_threshold", 0.3)),
-            max_missing=int(cfg.get("tracker.max_missing", 12)),
+            max_missing_seconds=float(cfg.get("tracker.max_missing_seconds", 2.0)),
             min_hits=int(cfg.get("tracker.min_hits", 3)),
+            min_seconds=float(cfg.get("tracker.min_seconds", 0.4)),
         )
 
         self._lock = threading.Lock()
@@ -116,9 +117,10 @@ class Pipeline:
 
         active, _closed = self.tracker.update(detections)
 
+        confirmed = {t.track_id for t in self.tracker.confirmed()}
         live: List[dict] = []
         for track in active:
-            if track.hits < self.tracker.min_hits:
+            if track.track_id not in confirmed:
                 continue
             self._record(track, frame)
             live.append({

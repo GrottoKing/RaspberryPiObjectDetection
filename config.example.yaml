@@ -70,11 +70,16 @@ detector:
 
 tracker:
   iou_threshold: 0.30
-  # How many frames an object can vanish for before its entry is closed.
-  max_missing: 12
-  # How many frames it must be seen for before it is logged at all. Raise
-  # this if you get flickery one-off sightings.
+  # How long an object can vanish for before its entry is closed. In SECONDS,
+  # not frames -- a frame count would silently mean something different every
+  # time you changed fps_limit, and a borderline detection that flickers would
+  # then get logged over and over as a new object.
+  max_missing_seconds: 2.0
+  # An object must be seen this many frames AND for this many seconds before
+  # it is logged at all. Raise either if you get flickery one-off sightings;
+  # min_seconds is the more useful one at high frame rates.
   min_hits: 3
+  min_seconds: 0.4
 
 storage:
   db_path: data/objectlog.db
