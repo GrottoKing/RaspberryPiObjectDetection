@@ -168,6 +168,89 @@ class TestDecode(unittest.TestCase):
         self.assertEqual(found[0].label, "class_4")
 
 
+# The exact set of models `apt install hailo-all` puts on a Pi, taken from a
+# real machine. Selection is tested against this rather than invented names.
+INSTALLED_ON_A_REAL_PI = [
+    "/usr/share/hailo-models/" + name + ".hef" for name in [
+        "resnet_v1_50_h10", "resnet_v1_50_h8l", "scrfd_2.5g_h8l",
+        "yolov11m_h10", "yolov5n_seg_h10", "yolov5n_seg_h8",
+        "yolov5n_seg_h8l_mz", "yolov5s_personface_h8l", "yolov6n_h8",
+        "yolov6n_h8l", "yolov8m_h10", "yolov8m_pose_h10", "yolov8s_h8",
+        "yolov8s_h8l", "yolov8s_pose_h10", "yolov8s_pose_h8",
+        "yolov8s_pose_h8l_pi", "yolox_s_leaky_h8l_rpi",
+    ]
+]
+
+
+class TestModelSelection(unittest.TestCase):
+    """Picking a detector out of what ships on the Pi.
+
+    The failure this guards against is real: the first version sorted
+    alphabetically and chose resnet_v1_50 -- an image classifier -- then
+    advised configuring it as the object detector.
+    """
+
+    def setUp(self):
+        from objectlog.backends.hailo_backend import score_hef, select_hef
+
+        self.score_hef = score_hef
+        self.select_hef = select_hef
+
+    def test_classifiers_are_not_detectors(self):
+        self.assertLess(self.score_hef("/x/resnet_v1_50_h10.hef"), 0)
+        self.assertLess(self.score_hef("/x/mobilenet_v1.hef"), 0)
+
+    def test_pose_and_segmentation_are_not_detectors(self):
+        self.assertLess(self.score_hef("/x/yolov8m_pose_h10.hef"), 0)
+        self.assertLess(self.score_hef("/x/yolov5n_seg_h10.hef"), 0)
+
+    def test_face_and_single_purpose_models_are_excluded(self):
+        # These detect boxes, but their classes are not COCO, so COCO labels
+        # would mislabel everything they find.
+        self.assertLess(self.score_hef("/x/scrfd_2.5g_h8l.hef"), 0)
+        self.assertLess(self.score_hef("/x/yolov5s_personface_h8l.hef"), 0)
+
+    def test_real_detectors_score_positively(self):
+        for name in ("yolov11m_h10", "yolov8m_h10", "yolov8s_h8",
+                     "yolov6n_h8", "yolox_s_leaky_h8l_rpi"):
+            self.assertGreaterEqual(self.score_hef(f"/x/{name}.hef"), 0, name)
+
+    def test_newer_and_larger_models_outrank_older_and_smaller(self):
+        self.assertGreater(self.score_hef("/x/yolov11m_h10.hef"),
+                           self.score_hef("/x/yolov8m_h10.hef"))
+        self.assertGreater(self.score_hef("/x/yolov8m_h10.hef"),
+                           self.score_hef("/x/yolov8s_h8.hef"))
+        self.assertGreater(self.score_hef("/x/yolov8s_h8.hef"),
+                           self.score_hef("/x/yolov6n_h8.hef"))
+
+    def test_picks_the_best_model_for_a_hailo10h(self):
+        chosen = self.select_hef(INSTALLED_ON_A_REAL_PI, "HAILO10H")
+        self.assertTrue(chosen.endswith("yolov11m_h10.hef"), chosen)
+
+    def test_picks_the_best_model_for_a_hailo8(self):
+        chosen = self.select_hef(INSTALLED_ON_A_REAL_PI, "HAILO8")
+        self.assertTrue(chosen.endswith("yolov8s_h8.hef"), chosen)
+
+    def test_h8_does_not_match_an_h8l_build(self):
+        # '_h8' is a prefix of '_h8l'; a naive substring match would load a
+        # model the chip cannot run.
+        chosen = self.select_hef(INSTALLED_ON_A_REAL_PI, "HAILO8L")
+        self.assertTrue(chosen.endswith("_h8l.hef"), chosen)
+        self.assertFalse(self.select_hef(
+            ["/x/yolov8s_h8l.hef"], "HAILO8"), "an h8l build is not h8-loadable")
+
+    def test_no_suitable_model_returns_nothing(self):
+        # Better to say "none" than to hand back something that cannot load.
+        self.assertIsNone(self.select_hef(
+            ["/x/resnet_v1_50_h10.hef", "/x/scrfd_2.5g_h8l.hef"], "HAILO10H"))
+        self.assertIsNone(self.select_hef([], "HAILO10H"))
+
+    def test_unknown_architecture_still_picks_a_detector(self):
+        chosen = self.select_hef(INSTALLED_ON_A_REAL_PI, None)
+        self.assertIsNotNone(chosen)
+        self.assertGreaterEqual(self.score_hef(chosen), 0)
+
+
 class TestHefDiscovery(unittest.TestCase):
     def test_explicit_path_must_exist(self):
         from objectlog.backends.hailo_backend import find_hef

@@ -130,11 +130,23 @@ you can leave it on auto if you prefer.
 
 ### Getting models
 
-`hailo-all` installs some into `/usr/share/hailo-models/`. More come from the
-[Hailo model zoo](https://github.com/hailo-ai/hailo_model_zoo). **Match your
-chip**: the AI HAT+ 26 TOPS is a **Hailo-8**, the 13 TOPS version and the older
-AI Kit are **Hailo-8L**, and a model compiled for one will not run on the
-other. `hailortcli fw-control identify` tells you which you have.
+`hailo-all` installs a couple of dozen into `/usr/share/hailo-models/`. More
+come from the [Hailo model zoo](https://github.com/hailo-ai/hailo_model_zoo).
+
+**Match your chip.** A model compiled for one architecture will not load on
+another, and the filename says which it is built for:
+
+| Board | Chip | Filename suffix |
+|---|---|---|
+| AI HAT+ (newer, 40 TOPS) | Hailo-10H | `_h10` |
+| AI HAT+ 26 TOPS | Hailo-8 | `_h8` |
+| AI HAT+ 13 TOPS / AI Kit | Hailo-8L | `_h8l` |
+
+The probe reports your architecture and marks every installed model as usable,
+"not an object detector", or "built for a different chip". Note that most of
+what ships is *not* a general detector — there are classifiers (`resnet`),
+pose models (`_pose`), segmentation (`_seg`) and face detectors (`scrfd`) in
+there, and pointing the backend at one of those will not work.
 
 With a Hailo-8 there is no reason to run a nano model — `yolov8m` or larger is
 comfortably real-time, and that is where the accuracy gain comes from.

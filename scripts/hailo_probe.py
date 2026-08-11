@@ -17,22 +17,15 @@ backend misbehaves, paste this output rather than guessing.
 from __future__ import annotations
 
 import argparse
-import glob
 import os
 import shutil
 import subprocess
 import sys
 
-# Where Raspberry Pi OS and the Hailo examples put compiled models.
-HEF_SEARCH_PATHS = [
-    "/usr/share/hailo-models",
-    "/usr/local/hailo/resources",
-    "/opt/hailo/resources",
-    os.path.expanduser("~/hailo-rpi5-examples/resources"),
-    os.path.expanduser("~/hailo-rpi5-examples/resources/models"),
-    "models",
-    "resources",
-]
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from objectlog.backends.hailo_backend import (  # noqa: E402
+    detect_architecture, list_hefs, score_hef, select_hef)
 
 
 def rule(title: str) -> None:
@@ -54,12 +47,41 @@ def run(command: list) -> tuple:
         return False, str(exc)
 
 
+def check_venv() -> None:
+    """The service runs .venv/bin/python -- that is what must find the bindings.
+
+    A probe run with the system python can succeed while the service silently
+    falls back to CPU, which is a confusing way to lose an accelerator.
+    """
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    venv_python = os.path.join(root, ".venv", "bin", "python")
+    if not os.path.exists(venv_python):
+        return
+    running_in_venv = os.path.abspath(sys.executable) == os.path.abspath(venv_python)
+    result = subprocess.run(
+        [venv_python, "-c", "import hailo_platform"],
+        capture_output=True, text=True)
+    if result.returncode == 0:
+        print(f"project venv  : can import hailo_platform"
+              f"{' (you are running in it)' if running_in_venv else ''}")
+    else:
+        print("project venv  : CANNOT import hailo_platform  <-- the service")
+        print("                runs .venv/bin/python, so it will fall back to")
+        print("                the CPU even though this probe works.")
+        print("                Rebuild the venv so it can see apt packages:")
+        print("                    rm -rf .venv")
+        print("                    bash scripts/install.sh")
+
+
 def check_environment() -> bool:
     rule("1. RUNTIME AND DEVICE")
 
     ok, output = run(["hailortcli", "fw-control", "identify"])
-    if ok:
+    if ok and output.strip():
         print(output)
+    elif ok:
+        print("hailortcli ran but printed nothing (often means the device is")
+        print("busy -- see section 4).")
     else:
         print(f"hailortcli: {output}")
         print()
@@ -78,6 +100,16 @@ def check_environment() -> bool:
     else:
         print("PCIe: could not run lspci")
 
+    arch = detect_architecture()
+    print(f"architecture : {arch or 'could not determine'}"
+          f"{'   <-- models must carry the matching suffix' if arch else ''}")
+    if arch:
+        from objectlog.backends.hailo_backend import ARCH_SUFFIXES
+
+        suffixes = ARCH_SUFFIXES.get(arch, ())
+        if suffixes:
+            print(f"               i.e. filenames ending {', '.join(suffixes)}")
+
     print()
     try:
         import hailo_platform  # noqa: F401
@@ -94,6 +126,8 @@ def check_environment() -> bool:
         print("(scripts/install.sh does this, but a venv made by hand may not)")
         importable = False
 
+    check_venv()
+
     # PCIe Gen 3 roughly doubles the throughput to the accelerator.
     try:
         with open("/boot/firmware/config.txt", "r", encoding="utf-8") as handle:
@@ -109,15 +143,11 @@ def check_environment() -> bool:
     return importable
 
 
-def find_hefs() -> list:
+def find_hefs(arch):
     rule("2. COMPILED MODELS (.hef) ON THIS SYSTEM")
-    found = []
-    for directory in HEF_SEARCH_PATHS:
-        for path in sorted(glob.glob(os.path.join(directory, "**", "*.hef"),
-                                     recursive=True)):
-            if path not in found:
-                found.append(path)
+    from objectlog.backends.hailo_backend import HEF_SEARCH_PATHS
 
+    found = list_hefs()
     if not found:
         print("None found. Looked in:")
         for directory in HEF_SEARCH_PATHS:
@@ -127,13 +157,38 @@ def find_hefs() -> list:
         print("/usr/share/hailo-models/. Otherwise fetch them from the Hailo")
         print("model zoo, choosing the build that matches your chip:")
         print("    https://github.com/hailo-ai/hailo_model_zoo")
-        print("A hailo8 model will NOT run on a hailo8l, or vice versa.")
-        return found
+        return found, None
 
+    chosen = select_hef(found, arch)
+    suffixes = []
+    if arch:
+        from objectlog.backends.hailo_backend import ARCH_SUFFIXES
+
+        suffixes = [s.lstrip("_") for s in ARCH_SUFFIXES.get(arch, ())]
+
+    print(f"{'':2}{'model':<42}{'size':>8}  notes")
+    print("-" * 72)
     for path in found:
+        name = os.path.basename(path)
         size = os.path.getsize(path) / 1e6
-        print(f"    {path}  ({size:.1f} MB)")
-    return found
+        notes = []
+        if score_hef(path) < 0:
+            notes.append("not an object detector")
+        elif suffixes:
+            stem = name[:-4].lower().split("_")
+            if not any(s in stem for s in suffixes):
+                notes.append("built for a different chip")
+        marker = "->" if path == chosen else "  "
+        print(f"{marker}{name:<42}{size:>7.1f}M  {', '.join(notes)}")
+
+    print()
+    if chosen:
+        print(f"Best general-purpose detector for this chip: {chosen}")
+    else:
+        print("None of these is an object detector built for this chip.")
+        print("Get one from the Hailo model zoo with the right suffix:")
+        print("    https://github.com/hailo-ai/hailo_model_zoo")
+    return found, chosen
 
 
 def inspect_hef(hef_path: str) -> None:
@@ -210,9 +265,45 @@ def test_inference(hef_path: str) -> None:
                 print("    (empty)")
     except Exception as exc:
         print(f"inference failed: {type(exc).__name__}: {exc}")
+        if "PHYSICAL_DEVICES" in str(exc) or "74" in str(exc):
+            diagnose_busy_device()
+
+
+def diagnose_busy_device() -> None:
+    """Work out who is holding the accelerator open."""
+    print()
+    print("The accelerator is already claimed by another process. Only one")
+    print("process can hold it at a time. Likely candidates:")
+    print()
+
+    found_any = False
+    for tool in (["fuser", "-v", "/dev/hailo0"], ["lsof", "/dev/hailo0"]):
+        if not shutil.which(tool[0]):
+            continue
+        result = subprocess.run(tool, capture_output=True, text=True)
+        text = (result.stdout + result.stderr).strip()
+        if text and "no process" not in text.lower():
+            print(f"  $ {' '.join(tool)}")
+            for line in text.splitlines():
+                print(f"    {line}")
+            found_any = True
+            break
+
+    ok, services = run(["systemctl", "is-active", "objectlog"])
+    if ok and services.strip() == "active":
+        print("  objectlog is running:  sudo systemctl stop objectlog")
+        found_any = True
+
+    if not found_any:
+        print("  Nothing obvious. Things that commonly hold it:")
+        print("    - a previous python process that did not exit")
+        print("      pgrep -af python | grep -i hailo")
+        print("    - rpicam-apps or a Hailo demo still running")
+        print("    - the objectlog service:  sudo systemctl stop objectlog")
         print()
-        print("A 'device in use' error usually means the service is running:")
-        print("    sudo systemctl stop objectlog")
+        print("  If the holder is gone but the error persists, reset it:")
+        print("    sudo systemctl restart hailort.service   (if present)")
+        print("    or reboot")
 
 
 def describe_value(value, indent: int = 4, depth: int = 0) -> bool:
@@ -260,9 +351,10 @@ def main(argv=None) -> int:
 
     print("Hailo probe — reporting what this Pi actually has")
     importable = check_environment()
-    found = find_hefs()
+    arch = detect_architecture()
+    found, chosen = find_hefs(arch)
 
-    target = args.hef or (found[0] if found else None)
+    target = args.hef or chosen
     if target and not os.path.exists(target):
         print(f"\nno such file: {target}")
         return 1
@@ -278,8 +370,8 @@ def main(argv=None) -> int:
     if not importable:
         print("Install the runtime first:  sudo apt install -y hailo-all")
         print("then re-run this probe.")
-    elif not found and not args.hef:
-        print("Get a compiled model, then re-run with --hef <path>.")
+    elif not target:
+        print("Get a compiled detector for this chip, then re-run with --hef.")
     else:
         print("If sections 3 and 4 look sane, enable the backend:")
         print()

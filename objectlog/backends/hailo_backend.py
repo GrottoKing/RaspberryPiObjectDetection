@@ -31,18 +31,139 @@ HEF_SEARCH_PATHS = [
 ]
 
 
-def find_hef(preferred: Optional[str] = None) -> Optional[str]:
-    """Locate a compiled model, preferring an explicitly configured one."""
-    if preferred:
-        return preferred if os.path.exists(preferred) else None
+# Compiled models carry their target chip in the filename. A model built for
+# one architecture will not load on another.
+ARCH_SUFFIXES = {
+    "HAILO10H": ("_h10",),
+    "HAILO8": ("_h8",),
+    "HAILO8L": ("_h8l",),
+    "HAILO8R": ("_h8r", "_h8"),
+    "HAILO15H": ("_h15",),
+}
+
+# Newer families detect better; within a family, bigger is better. An
+# accelerator has the headroom for the big ones, so prefer them.
+_FAMILY_RANK = {
+    "yolov11": 110, "yolo11": 110, "yolov10": 100, "yolov9": 95,
+    "yolov8": 90, "yolox": 70, "yolov7": 65, "yolov6": 60, "yolov5": 50,
+}
+_SIZE_RANK = {"x": 5, "l": 4, "m": 3, "s": 2, "n": 1}
+
+# Not general object detectors, whatever else they are good at: classifiers,
+# segmentation, pose estimation, and single-purpose face/person models whose
+# class list is not COCO.
+_NOT_A_DETECTOR = ("resnet", "mobilenet", "efficientnet", "_seg", "_pose",
+                   "scrfd", "arcface", "retinaface", "personface", "_depth",
+                   "clip", "lprnet", "vit_")
+
+
+def detect_architecture() -> Optional[str]:
+    """Ask the device which chip it is, so we pick a model that will load."""
+    import shutil
+    import subprocess
+
+    if shutil.which("hailortcli"):
+        try:
+            result = subprocess.run(["hailortcli", "fw-control", "identify"],
+                                    capture_output=True, text=True, timeout=20)
+            text = (result.stdout + result.stderr).upper()
+            for arch in ("HAILO10H", "HAILO15H", "HAILO8L", "HAILO8R", "HAILO8"):
+                if arch in text.replace("-", "").replace(" ", ""):
+                    return arch
+        except Exception:
+            pass
+
+    # The PCIe device name is a reliable fallback and needs no runtime.
+    try:
+        import subprocess as sp
+
+        pci = sp.run(["lspci"], capture_output=True, text=True,
+                     timeout=10).stdout.upper()
+        for line in pci.splitlines():
+            if "HAILO" not in line:
+                continue
+            squashed = line.replace("-", "").replace(" ", "")
+            for arch in ("HAILO10H", "HAILO15H", "HAILO8L", "HAILO8R", "HAILO8"):
+                if arch in squashed:
+                    return arch
+    except Exception:
+        pass
+    return None
+
+
+def score_hef(path: str) -> int:
+    """Rank a model for use as a general object detector. <0 means unsuitable."""
+    import re
+
+    name = os.path.basename(path).lower()
+    if any(marker in name for marker in _NOT_A_DETECTOR):
+        return -1
+
+    stem = name[:-4] if name.endswith(".hef") else name
+    parts = stem.split("_")
+    match = re.match(r"^(yolo(?:v\d+|x)?)([nsmlx])?$", parts[0])
+    if not match:
+        return -1
+
+    family, size = match.group(1), match.group(2)
+    # yolox puts its size in the next segment: yolox_s_leaky_h8l_rpi
+    if size is None and len(parts) > 1 and parts[1] in _SIZE_RANK:
+        size = parts[1]
+
+    rank = _FAMILY_RANK.get(family)
+    if rank is None:
+        return -1
+    return rank + _SIZE_RANK.get(size or "n", 1)
+
+
+def select_hef(paths: Sequence[str], arch: Optional[str] = None) -> Optional[str]:
+    """Pick the best general-purpose detector from what is installed.
+
+    Filters to models built for this chip, discards anything that is not an
+    object detector, then takes the strongest remaining model.
+    """
+    candidates = [p for p in paths if score_hef(p) >= 0]
+
+    if arch:
+        suffixes = ARCH_SUFFIXES.get(arch.upper(), ())
+        matching = []
+        for path in candidates:
+            stem = os.path.basename(path).lower()
+            stem = stem[:-4] if stem.endswith(".hef") else stem
+            segments = stem.split("_")
+            # Match on a whole segment so '_h8' does not also match '_h8l'.
+            for suffix in suffixes:
+                if suffix.lstrip("_") in segments:
+                    matching.append(path)
+                    break
+        # If nothing matches the chip, offering a model that cannot load is
+        # worse than offering nothing.
+        candidates = matching
+
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: (score_hef(p), p))
+
+
+def list_hefs() -> list:
+    """Every compiled model in the usual places."""
     import glob
 
+    found = []
     for directory in HEF_SEARCH_PATHS:
-        matches = sorted(glob.glob(os.path.join(directory, "**", "*.hef"),
-                                   recursive=True))
-        if matches:
-            return matches[0]
-    return None
+        for path in sorted(glob.glob(os.path.join(directory, "**", "*.hef"),
+                                     recursive=True)):
+            if path not in found:
+                found.append(path)
+    return found
+
+
+def find_hef(preferred: Optional[str] = None,
+             arch: Optional[str] = None) -> Optional[str]:
+    """Locate a model, preferring an explicitly configured one."""
+    if preferred:
+        return preferred if os.path.exists(preferred) else None
+    return select_hef(list_hefs(), arch or detect_architecture())
 
 
 def _iter_class_arrays(raw) -> Sequence:
