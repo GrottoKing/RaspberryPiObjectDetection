@@ -1,0 +1,20 @@
+[Unit]
+Description=Camera sightings log
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust these two if you cloned somewhere else or run as a different user.
+User=pi
+WorkingDirectory=/home/pi/RaspberryPiObjectDetection
+ExecStart=/home/pi/RaspberryPiObjectDetection/.venv/bin/python run.py
+Restart=on-failure
+RestartSec=5
+# The camera stack is happier with a moment to settle after a reboot.
+ExecStartPre=/bin/sleep 5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

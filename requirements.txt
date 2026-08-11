@@ -1,0 +1,16 @@
+# Core -- needed on every install.
+flask>=2.2
+numpy>=1.24
+Pillow>=9.4
+PyYAML>=6.0
+
+# Detector. onnxruntime is the recommended backend on a Raspberry Pi: small
+# wheel, no PyTorch, and fast enough for a sightings log.
+onnxruntime>=1.16
+
+# Optional extras, install only if you want them:
+#   pip install ultralytics       # alternative backend, also exports models
+#   pip install opencv-python     # only needed for USB webcams
+#
+# picamera2 should come from apt, not pip:
+#   sudo apt install -y python3-picamera2

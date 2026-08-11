@@ -1,0 +1,26 @@
+# Runtime data -- the log and its snapshots are yours, not the repo's.
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Downloaded models
+models/
+*.onnx
+*.pt
+
+# Local config
+config.yaml
+config.yml
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Sample images are yours, not the repo's.
+samples/*
+!samples/README.md

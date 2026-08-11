@@ -1,0 +1,59 @@
+# Copy to config.yaml and edit. Every key is optional -- anything you leave
+# out keeps its default, and the app runs fine with no config file at all.
+
+camera:
+  # auto tries the Pi camera first, then a USB webcam, then a synthetic test
+  # pattern. Force it to picamera2 if you want a hard failure when the ribbon
+  # cable is loose rather than a silent fallback.
+  source: auto
+  width: 1280
+  height: 720
+  # Detections per second. The Pi cannot do 30 -- and does not need to, since
+  # objects stay in frame for seconds. 3-5 is a good range on a Pi 5, 1-2 on a
+  # Pi 4 or Zero 2.
+  fps_limit: 4
+  # 0, 90, 180 or 270. Camera Module 3 mounted upside down? Use 180.
+  rotation: 0
+  hflip: false
+  vflip: false
+
+detector:
+  # auto = onnx if a model is present, else ultralytics, else the mock
+  # detector so the page still does something.
+  backend: auto
+  model: models/yolo11n.onnx
+  # Raise towards 0.6 if the log fills with nonsense; lower towards 0.3 if it
+  # is missing obvious things.
+  confidence: 0.40
+  iou: 0.45
+  input_size: 640
+  # Only log these classes. Empty means everything the model knows.
+  # classes: [person, cat, dog, car]
+  classes: []
+  # Ignore boxes smaller than this fraction of the frame -- kills distant
+  # noise, e.g. a "person" made of six pixels at the end of the garden.
+  min_box_area: 0.004
+
+tracker:
+  iou_threshold: 0.30
+  # How many frames an object can vanish for before its entry is closed.
+  max_missing: 12
+  # How many frames it must be seen for before it is logged at all. Raise
+  # this if you get flickery one-off sightings.
+  min_hits: 3
+
+storage:
+  db_path: data/objectlog.db
+  snapshot_dir: data/snapshots
+  # Oldest sightings are deleted past this, along with their images.
+  max_entries: 4000
+  snapshot_max_width: 720
+  snapshot_quality: 82
+
+web:
+  host: 0.0.0.0        # 0.0.0.0 = reachable from other devices on the LAN
+  port: 8000
+  stream: true         # the live MJPEG preview at /stream.mjpg
+  stream_max_width: 640
+  stream_fps: 4
+  poll_ms: 1500        # how often the page asks for new sightings

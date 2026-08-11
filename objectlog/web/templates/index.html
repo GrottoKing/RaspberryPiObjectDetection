@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Camera Sightings Log</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>👁️</text></svg>">
+</head>
+<body data-poll-ms="{{ poll_ms }}" data-stream="{{ 'on' if stream_enabled else 'off' }}">
+
+<header class="topbar">
+  <div class="brand">
+    <span class="eye" aria-hidden="true"></span>
+    <div>
+      <h1>Camera Sightings</h1>
+      <p class="sub" id="statusLine">connecting&hellip;</p>
+    </div>
+  </div>
+
+  <div class="pills" id="pills">
+    <span class="pill" id="pillLive"><b>0</b> in view</span>
+    <span class="pill" id="pillTotal"><b>0</b> logged</span>
+    <span class="pill" id="pillFps"><b>0</b> fps</span>
+  </div>
+
+  <div class="actions">
+    {% if stream_enabled %}
+    <button class="btn" id="toggleStream" type="button">Live view</button>
+    {% endif %}
+    <button class="btn" id="togglePause" type="button">Pause updates</button>
+    <button class="btn danger" id="clearLog" type="button">Clear log</button>
+  </div>
+</header>
+
+{% if stream_enabled %}
+<section class="stream-wrap" id="streamWrap" hidden>
+  <img id="streamImg" alt="Live camera view with detection boxes">
+  <p class="stream-note">Live view from the camera. Boxes mark objects currently being tracked.</p>
+</section>
+{% endif %}
+
+<main class="layout">
+  <aside class="sidebar">
+    <div class="side-head">Categories</div>
+    <nav id="categoryList" class="cat-list">
+      <button class="cat active" data-category="" type="button">
+        <span class="cat-name">Everything</span><span class="cat-count">0</span>
+      </button>
+    </nav>
+    <p class="side-note">Categories appear here as new kinds of object are
+      identified.</p>
+
+    <div class="side-head">Most seen</div>
+    <ul id="labelList" class="label-list"></ul>
+  </aside>
+
+  <section class="content">
+    <div class="toolbar">
+      <input id="search" class="search" type="search" placeholder="Filter sightings…"
+             autocomplete="off" spellcheck="false">
+      <label class="chk"><input type="checkbox" id="groupToggle" checked> Group by category</label>
+    </div>
+
+    <div id="log" class="log"></div>
+
+    <div class="log-footer">
+      <button class="btn ghost" id="loadMore" type="button" hidden>Load older sightings</button>
+      <p id="emptyState" class="empty">Nothing logged yet. Point the camera at
+        something and give it a few seconds.</p>
+    </div>
+  </section>
+</main>
+
+<!-- The cursor-following hover preview. -->
+<figure id="preview" class="preview" aria-hidden="true">
+  <img id="previewImg" alt="">
+  <figcaption id="previewCaption"></figcaption>
+</figure>
+
+<!-- Tap-to-view fallback for touch devices, which have no hover. -->
+<div id="lightbox" class="lightbox" hidden>
+  <button class="lightbox-close" type="button" aria-label="Close">&times;</button>
+  <img id="lightboxImg" alt="">
+  <p id="lightboxCaption"></p>
+</div>
+
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
