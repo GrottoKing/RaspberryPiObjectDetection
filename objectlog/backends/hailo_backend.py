@@ -226,7 +226,14 @@ def decode_nms_output(raw, class_names: Sequence[str], confidence: float,
             continue
         if boxes.ndim == 1:
             boxes = boxes.reshape(1, -1)
-        if boxes.ndim != 2 or boxes.shape[1] < 5:
+        if boxes.ndim != 2:
+            continue
+        # A model declaring (classes, 5, max_detections) hands each class back
+        # as (5, N) -- five rows of coordinates rather than N rows of five.
+        # Reading that as-is silently yields five nonsense boxes.
+        if boxes.shape[1] != 5 and boxes.shape[0] == 5:
+            boxes = boxes.T
+        if boxes.shape[1] < 5:
             continue
 
         label = (class_names[class_id] if class_id < len(class_names)

@@ -175,6 +175,35 @@ detector:
   hailo_letterbox: false
 ```
 
+### "not enough free devices ... found: 0"
+
+`HAILO_OUT_OF_PHYSICAL_DEVICES` with **found: 0** does *not* mean the device is
+busy — it means the runtime can see no accelerator at all. Check whether the
+kernel driver has created a device node:
+
+```bash
+ls -l /dev/hailo*
+```
+
+If there is none, the card is on the PCIe bus but unclaimed by the driver:
+
+```bash
+sudo modprobe hailo_pci            # load it by hand
+dmesg | grep -i hailo | tail -20   # what did it say?
+dkms status                        # did the module build for this kernel?
+```
+
+A missing module is usually a kernel update the driver was not rebuilt for:
+
+```bash
+sudo apt update && sudo apt full-upgrade -y
+sudo apt install --reinstall hailo-all
+sudo reboot
+```
+
+If `/dev/hailo0` *does* exist and you still get this error, then something is
+genuinely holding it — the probe will name the process.
+
 ### Honest status
 
 The decoding logic is unit-tested against every output shape HailoRT is known

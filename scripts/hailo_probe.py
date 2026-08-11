@@ -100,6 +100,16 @@ def check_environment() -> bool:
     else:
         print("PCIe: could not run lspci")
 
+    nodes = device_nodes()
+    if nodes:
+        print("device nodes :", ", ".join(nodes))
+    else:
+        print("device nodes : NONE  <-- no /dev/hailo*, so the runtime cannot")
+        print("               reach the card even though PCIe can see it.")
+        print(f"               kernel module loaded: "
+              f"{'yes' if driver_loaded() else 'NO'}")
+        print("               try: sudo modprobe hailo_pci")
+
     arch = detect_architecture()
     print(f"architecture : {arch or 'could not determine'}"
           f"{'   <-- models must carry the matching suffix' if arch else ''}")
@@ -266,44 +276,77 @@ def test_inference(hef_path: str) -> None:
     except Exception as exc:
         print(f"inference failed: {type(exc).__name__}: {exc}")
         if "PHYSICAL_DEVICES" in str(exc) or "74" in str(exc):
-            diagnose_busy_device()
+            diagnose_no_device()
 
 
-def diagnose_busy_device() -> None:
-    """Work out who is holding the accelerator open."""
+def device_nodes() -> list:
+    import glob as _glob
+
+    return sorted(_glob.glob("/dev/hailo*"))
+
+
+def driver_loaded() -> bool:
+    try:
+        with open("/proc/modules", "r", encoding="utf-8") as handle:
+            return "hailo" in handle.read().lower()
+    except OSError:
+        return False
+
+
+def diagnose_no_device() -> None:
+    """Explain why HailoRT found zero devices.
+
+    'requested: 1, found: 0' means no device at all, which is a different
+    problem from a device that is busy -- and the fix is completely different.
+    """
+    nodes = device_nodes()
+    loaded = driver_loaded()
+
     print()
-    print("The accelerator is already claimed by another process. Only one")
-    print("process can hold it at a time. Likely candidates:")
-    print()
+    if not nodes:
+        print("There is no /dev/hailo* device node, so HailoRT can see no")
+        print("accelerator at all. The card is on the PCIe bus but the kernel")
+        print("driver has not claimed it. This is a driver problem, not a")
+        print("process holding the device.")
+        print()
+        print(f"  kernel module loaded : {'yes' if loaded else 'NO'}")
+        print(f"  device nodes         : none")
+        print()
+        print("Try, in order:")
+        print("    sudo modprobe hailo_pci          # load it by hand")
+        print("    ls -l /dev/hailo*                # did a node appear?")
+        print("    dmesg | grep -i hailo | tail -20 # what did it say?")
+        print()
+        print("If the module will not load, the driver is missing or was")
+        print("built for a different kernel (common after a kernel update):")
+        print("    sudo apt update && sudo apt full-upgrade -y")
+        print("    sudo apt install --reinstall hailo-all")
+        print("    sudo reboot")
+        print()
+        print("dkms status  will show whether the module built for your kernel.")
+        return
 
-    found_any = False
-    for tool in (["fuser", "-v", "/dev/hailo0"], ["lsof", "/dev/hailo0"]):
+    print("Device nodes exist but HailoRT could not take one:")
+    for node in nodes:
+        print(f"    {node}")
+    print()
+    print("That means another process is holding it. Only one at a time:")
+    for tool in (["fuser", "-v"] + nodes, ["lsof"] + nodes):
         if not shutil.which(tool[0]):
             continue
         result = subprocess.run(tool, capture_output=True, text=True)
         text = (result.stdout + result.stderr).strip()
-        if text and "no process" not in text.lower():
+        if text and "does not exist" not in text.lower():
             print(f"  $ {' '.join(tool)}")
             for line in text.splitlines():
                 print(f"    {line}")
-            found_any = True
             break
-
-    ok, services = run(["systemctl", "is-active", "objectlog"])
-    if ok and services.strip() == "active":
+    ok, active = run(["systemctl", "is-active", "objectlog"])
+    if ok and active.strip() == "active":
         print("  objectlog is running:  sudo systemctl stop objectlog")
-        found_any = True
-
-    if not found_any:
-        print("  Nothing obvious. Things that commonly hold it:")
-        print("    - a previous python process that did not exit")
-        print("      pgrep -af python | grep -i hailo")
-        print("    - rpicam-apps or a Hailo demo still running")
-        print("    - the objectlog service:  sudo systemctl stop objectlog")
-        print()
-        print("  If the holder is gone but the error persists, reset it:")
-        print("    sudo systemctl restart hailort.service   (if present)")
-        print("    or reboot")
+    print()
+    print("Otherwise look for a stray process:  pgrep -af python")
+    print("or just reboot.")
 
 
 def describe_value(value, indent: int = 4, depth: int = 0) -> bool:

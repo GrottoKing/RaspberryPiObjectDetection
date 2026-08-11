@@ -120,6 +120,32 @@ class TestDecode(unittest.TestCase):
         self.assertAlmostEqual(y0, 0.25 * 720, delta=1.0)
         self.assertAlmostEqual(y1, 0.75 * 720, delta=1.0)
 
+    def test_bbox_first_layout_is_transposed(self):
+        # yolov11m_h10 declares its output as (80, 5, 100): classes, then
+        # [y0,x0,y1,x1,score], then up to 100 detections. Each class therefore
+        # arrives as (5, N), not (N, 5). Read literally that is five bogus
+        # boxes built from coordinate rows, so it must be transposed.
+        classes = [np.zeros((5, 100), dtype=np.float32) for _ in range(80)]
+        block = np.zeros((5, 100), dtype=np.float32)
+        block[:, 0] = [0.1, 0.2, 0.5, 0.6, 0.9]     # first detection
+        block[:, 1] = [0.3, 0.3, 0.4, 0.4, 0.7]     # second detection
+        classes[0] = block
+        found = decode_nms_output(classes, COCO_CLASSES, 0.4, 1000, 500)
+
+        self.assertEqual(len(found), 2, "should read columns, not rows")
+        self.assertEqual({d.label for d in found}, {"person"})
+        best = max(found, key=lambda d: d.confidence)
+        self.assertAlmostEqual(best.confidence, 0.9, places=5)
+        for actual, expected in zip(best.box, (200.0, 50.0, 600.0, 250.0)):
+            self.assertAlmostEqual(actual, expected, delta=0.5)
+
+    def test_padding_in_a_dense_block_is_dropped(self):
+        # Unused detection slots are zeros; a zero score must not become a box.
+        classes = [np.zeros((5, 100), dtype=np.float32) for _ in range(80)]
+        classes[0][:, 0] = [0.1, 0.1, 0.4, 0.4, 0.95]
+        found = decode_nms_output(classes, COCO_CLASSES, 0.4, 640, 640)
+        self.assertEqual(len(found), 1)
+
     def test_boxes_are_clamped_to_the_frame(self):
         # Models sometimes emit slightly out-of-range normalised coordinates.
         raw = one_person_at(-0.05, -0.10, 1.20, 1.05)
