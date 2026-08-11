@@ -21,6 +21,7 @@ import os
 import shutil
 import subprocess
 import sys
+from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -100,17 +101,44 @@ def check_environment() -> bool:
     else:
         print("PCIe: could not run lspci")
 
+    arch = detect_architecture()
     nodes = device_nodes()
+    modules = loaded_modules()
+
     if nodes:
         print("device nodes :", ", ".join(nodes))
     else:
         print("device nodes : NONE  <-- no /dev/hailo*, so the runtime cannot")
         print("               reach the card even though PCIe can see it.")
-        print(f"               kernel module loaded: "
-              f"{'yes' if driver_loaded() else 'NO'}")
-        print("               try: sudo modprobe hailo_pci")
+    print(f"kernel modules: {', '.join(modules) if modules else 'none loaded'}")
 
-    arch = detect_architecture()
+    wanted = DRIVER_FOR_ARCH.get(arch or "")
+    if wanted:
+        if wanted in modules:
+            print(f"               {wanted} is the right driver for {arch} "
+                  f"and is loaded")
+        else:
+            print(f"               {arch} needs {wanted}, which is NOT loaded")
+            print(f"               try: sudo modprobe {wanted}")
+        wrong = [m for m in modules
+                 if m not in (wanted, wanted.replace("_pci", ""))
+                 and m.replace("_pci", "") != wanted.replace("_pci", "")]
+        if wrong:
+            print(f"               ({', '.join(wrong)} is loaded but drives a "
+                  f"different chip -- harmless, but it will not help)")
+
+    missing = firmware_failure()
+    if missing:
+        print()
+        print("FIRMWARE LOAD FAILED. The driver found the card and then could")
+        print(f"not load its firmware: {missing}")
+        print("Error -2 means the file is simply not on disk. Check:")
+        print("    ls -l /lib/firmware/hailo/")
+        print("    dpkg -l | grep -i hailo")
+        print("    apt-cache search hailo")
+        print("This is a missing package, not a broken card. See the README")
+        print("section \"firmware load failed\".")
+
     print(f"architecture : {arch or 'could not determine'}"
           f"{'   <-- models must carry the matching suffix' if arch else ''}")
     if arch:
@@ -279,18 +307,63 @@ def test_inference(hef_path: str) -> None:
             diagnose_no_device()
 
 
+# The two driver families are not interchangeable. hailo_pci drives Hailo-8
+# parts; hailo1x_pci drives Hailo-10H. Loading the wrong one does nothing.
+DRIVER_FOR_ARCH = {
+    "HAILO10H": "hailo1x_pci",
+    "HAILO15H": "hailo1x_pci",
+    "HAILO8": "hailo_pci",
+    "HAILO8L": "hailo_pci",
+    "HAILO8R": "hailo_pci",
+}
+
+
 def device_nodes() -> list:
     import glob as _glob
 
     return sorted(_glob.glob("/dev/hailo*"))
 
 
-def driver_loaded() -> bool:
+def loaded_modules() -> list:
     try:
         with open("/proc/modules", "r", encoding="utf-8") as handle:
-            return "hailo" in handle.read().lower()
+            return [line.split()[0] for line in handle
+                    if "hailo" in line.split()[0].lower()]
     except OSError:
-        return False
+        return []
+
+
+def driver_loaded() -> bool:
+    return bool(loaded_modules())
+
+
+def firmware_failure() -> Optional[str]:
+    """Find a firmware-load failure in the kernel log, and the file it wanted.
+
+    The driver probing successfully and then failing to load firmware is a
+    completely different fault from the driver being absent, and it is easy to
+    miss because everything up to that point looks healthy.
+    """
+    ok, log = run(["dmesg"])
+    if not ok:
+        return None
+    missing = None
+    failed = False
+    for line in log.splitlines():
+        lowered = line.lower()
+        if "hailo" not in lowered:
+            continue
+        if "failed with error -2 to write file" in lowered or (
+                "failed" in lowered and ".bin" in lowered):
+            parts = line.split()
+            for part in parts:
+                if part.endswith(".bin"):
+                    missing = part
+        if "firmware load failed" in lowered or "failed activating board" in lowered:
+            failed = True
+    if failed:
+        return missing or "(firmware file not named in the log)"
+    return None
 
 
 def diagnose_no_device() -> None:
@@ -301,8 +374,24 @@ def diagnose_no_device() -> None:
     """
     nodes = device_nodes()
     loaded = driver_loaded()
+    missing = firmware_failure()
 
     print()
+    if missing:
+        print("The driver reached the card but could not load its firmware:")
+        print(f"    {missing}")
+        print()
+        print("Error -2 is 'file not found' -- the firmware package is not")
+        print("installed. The card cannot start without it, which is why there")
+        print("is no device node. Nothing is holding the device.")
+        print()
+        print("    ls -l /lib/firmware/hailo/        # what is actually there")
+        print("    dpkg -l | grep -i hailo           # what is installed")
+        print("    apt-cache search hailo            # what is available")
+        print("    sudo apt update && sudo apt full-upgrade -y")
+        print("    sudo reboot")
+        return
+
     if not nodes:
         print("There is no /dev/hailo* device node, so HailoRT can see no")
         print("accelerator at all. The card is on the PCIe bus but the kernel")
@@ -313,7 +402,8 @@ def diagnose_no_device() -> None:
         print(f"  device nodes         : none")
         print()
         print("Try, in order:")
-        print("    sudo modprobe hailo_pci          # load it by hand")
+        print("    sudo modprobe hailo1x_pci        # Hailo-10H / 15H")
+        print("    sudo modprobe hailo_pci          # Hailo-8 family")
         print("    ls -l /dev/hailo*                # did a node appear?")
         print("    dmesg | grep -i hailo | tail -20 # what did it say?")
         print()

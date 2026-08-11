@@ -175,6 +175,38 @@ detector:
   hailo_letterbox: false
 ```
 
+### "Firmware load failed" / no /dev/hailo0
+
+If `dmesg | grep -i hailo` shows something like:
+
+```
+hailo1x 0001:01:00.0: Writing file hailo/hailo10h/customer_certificate.bin
+hailo1x 0001:01:00.0: Failed with error -2 to write file ...
+hailo1x 0001:01:00.0: Firmware load failed
+hailo1x 0001:01:00.0: probe with driver hailo1x failed with error -2
+```
+
+then the driver found the card and could not load firmware into it. Error `-2`
+is "file not found": the firmware simply is not on disk. The board never
+starts, so no device node is created and everything downstream fails with
+`HAILO_OUT_OF_PHYSICAL_DEVICES`. Nothing is holding the device.
+
+```bash
+ls -l /lib/firmware/hailo/          # what is actually installed
+dpkg -l | grep -i hailo             # which packages you have
+apt-cache search hailo              # what is available
+sudo apt update && sudo apt full-upgrade -y
+sudo reboot
+```
+
+**Note the two driver families.** `hailo_pci` drives Hailo-8 parts;
+`hailo1x_pci` drives Hailo-10H and Hailo-15H. Loading the wrong one appears to
+succeed and achieves nothing. `lsmod | grep hailo` shows which you have.
+
+A Hailo-10H also expects the HailoRT 5.x runtime. If `hailo_platform` reports
+4.x while the loaded driver is 5.x, the packages are mismatched and a
+full-upgrade is what resolves it.
+
 ### "not enough free devices ... found: 0"
 
 `HAILO_OUT_OF_PHYSICAL_DEVICES` with **found: 0** does *not* mean the device is
