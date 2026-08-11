@@ -330,7 +330,7 @@ class TestPipelineAndWeb(unittest.TestCase):
 class TestConfig(unittest.TestCase):
     def test_defaults_load_without_a_file(self):
         cfg = config_mod.load(None)
-        self.assertEqual(cfg.get("web.port"), 8000)
+        self.assertEqual(cfg.get("web.port"), 8010)
         self.assertIsNone(cfg.get("nothing.here"))
         self.assertEqual(cfg.get("nothing.here", "fallback"), "fallback")
 

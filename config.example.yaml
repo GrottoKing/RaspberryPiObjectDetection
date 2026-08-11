@@ -52,7 +52,7 @@ storage:
 
 web:
   host: 0.0.0.0        # 0.0.0.0 = reachable from other devices on the LAN
-  port: 8000
+  port: 8010
   stream: true         # the live MJPEG preview at /stream.mjpg
   stream_max_width: 640
   stream_fps: 4

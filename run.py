@@ -49,7 +49,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--rotation", type=int, choices=[0, 90, 180, 270],
                         help="rotate the camera image")
     parser.add_argument("--host", help="web bind address (default 0.0.0.0)")
-    parser.add_argument("--port", type=int, help="web port (default 8000)")
+    parser.add_argument("--port", type=int, help="web port (default 8010)")
     parser.add_argument("--no-stream", action="store_true",
                         help="disable the live MJPEG preview")
     parser.add_argument("--reset", action="store_true",
@@ -109,7 +109,7 @@ def main(argv=None) -> int:
     pipeline.start()
 
     host = cfg.get("web.host", "0.0.0.0")
-    port = int(cfg.get("web.port", 8000))
+    port = int(cfg.get("web.port", 8010))
     status = pipeline.status()
     print()
     print(f"  camera   : {status['camera']}")

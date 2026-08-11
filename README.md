@@ -28,7 +28,7 @@ bash scripts/install.sh
 ./.venv/bin/python run.py
 ```
 
-It prints the address to open, e.g. `http://192.168.1.42:8000/`. Open that on
+It prints the address to open, e.g. `http://192.168.1.42:8010/`. Open that on
 your phone or laptop — anything on the same network works.
 
 ### Try it before the camera is set up

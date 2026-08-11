@@ -59,7 +59,7 @@ DEFAULTS: Dict[str, Any] = {
     },
     "web": {
         "host": "0.0.0.0",
-        "port": 8000,
+        "port": 8010,
         # Serve the live MJPEG preview at /stream.mjpg
         "stream": True,
         "stream_max_width": 640,
