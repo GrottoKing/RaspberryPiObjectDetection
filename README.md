@@ -126,19 +126,21 @@ detector:
 
 **2. Use a bigger model.** `yolo11n` is the smallest one there is; false
 positives are the price. `yolo11s` has roughly three times the parameters and
-noticeably fewer of them:
-
-```bash
-python3 scripts/fetch_model.py --model yolo11s
-```
+noticeably fewer of them. It is **committed to this repository**, so there is
+nothing to download:
 
 ```yaml
 detector:
   model: models/yolo11s.onnx
 ```
 
-It is about 2–3× slower per frame. At `fps_limit: 4` on a Pi 5 there is room;
+It is about 1.5–2× slower per frame. At `fps_limit: 4` on a Pi 5 there is room;
 on a Pi 4, drop `fps_limit` to 1–2 at the same time.
+
+(Only `yolo11n` is published as a ready-made ONNX file, and converting the
+others needs PyTorch — not something worth installing on a Pi to convert one
+file, hence the committed copy. `scripts/fetch_model.py` still handles the
+download or conversion if you want a different model.)
 
 **3. Raise the confidence threshold** — but only as far as `tune.py` says is
 useful:

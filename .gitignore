@@ -4,10 +4,13 @@ data/
 *.db-wal
 *.db-shm
 
-# Downloaded models
+# Downloaded models. yolo11s is committed deliberately: no pre-exported ONNX
+# is published for it, and exporting one needs PyTorch, which is a painful
+# dependency to add to a Pi just to convert a file once.
 models/
 *.onnx
 *.pt
+!models/yolo11s.onnx
 
 # Local config
 config.yaml

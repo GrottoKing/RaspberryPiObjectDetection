@@ -19,18 +19,22 @@ import shutil
 import sys
 import urllib.request
 
-# Pre-exported ONNX weights, newest first. Each entry is a list of mirrors.
+# Pre-exported ONNX weights. Only yolo11n is actually published this way --
+# the Ultralytics Hugging Face repo does not carry ONNX for the larger models,
+# so those fall through to a local export or to the copy bundled in models/.
 SOURCES = {
     "yolo11n": [
         "https://huggingface.co/Ultralytics/YOLO11/resolve/main/yolo11n.onnx?download=true",
     ],
-    "yolo11s": [
-        "https://huggingface.co/Ultralytics/YOLO11/resolve/main/yolo11s.onnx?download=true",
-    ],
+    "yolo11s": [],
+    "yolo11m": [],
     "yolov8n": [
         "https://huggingface.co/Ultralytics/YOLOv8/resolve/main/yolov8n.onnx?download=true",
     ],
 }
+
+# Models committed to this repository, so they need no download at all.
+BUNDLED = {"yolo11s"}
 
 
 def download(url: str, destination: str) -> bool:
@@ -124,19 +128,33 @@ def main(argv=None) -> int:
         return 0 if verify(destination) else 1
 
     print(f"Fetching {args.model} -> {destination}")
+    if not SOURCES[args.model]:
+        print(f"  no pre-exported ONNX is published for {args.model}")
+
     for url in SOURCES[args.model]:
         if download(url, destination):
             break
     else:
-        print("  direct download unavailable, trying a local export")
+        print("  trying a local export instead")
         if not export_with_ultralytics(args.model, destination, args.imgsz,
                                        dynamic=not args.static):
             print()
-            print("Could not fetch a model automatically. Two options:")
-            print("  1. pip install ultralytics && python3 scripts/fetch_model.py")
-            print("  2. Export on another machine and copy the .onnx into models/")
-            print("  3. Or just run the demo with no model at all:")
-            print("       python3 run.py --camera synthetic --backend mock")
+            if args.model in BUNDLED:
+                print(f"No need to fetch this one -- {args.model}.onnx ships "
+                      f"with the repository.")
+                print("Make sure you are up to date and it will already be there:")
+                print("    git pull")
+                print(f"    ls -l models/{args.model}.onnx")
+            else:
+                print("Could not fetch a model automatically. Options:")
+                print(f"  1. Use the bundled model instead: "
+                      f"detector.model: models/yolo11s.onnx")
+                print("  2. pip install ultralytics && python3 scripts/fetch_model.py"
+                      f" --model {args.model}")
+                print("     (large: it pulls in PyTorch)")
+                print("  3. Export on another machine and copy the .onnx into models/")
+                print("  4. Or run the demo with no model at all:")
+                print("       python3 run.py --camera synthetic --backend mock")
             return 1
 
     if not verify(destination):
