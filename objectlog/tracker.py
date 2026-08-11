@@ -43,16 +43,33 @@ class Track:
     missing: int = 0
     first_seen: float = field(default_factory=time.time)
     last_seen: float = field(default_factory=time.time)
+    # Where it was first seen, so we can tell furniture from passers-by.
+    first_box: Optional[Box] = None
     # Set once the track has been written to the store.
     entry_id: Optional[int] = None
     # Best confidence seen so far -- decides whether to refresh the snapshot.
     best_confidence: float = 0.0
     snapshot_updates: int = 0
     description: Optional[dict] = None
+    # True when this track picked up an existing log entry rather than
+    # starting a new one.
+    rejoined: bool = False
 
     @property
     def age(self) -> float:
         return self.last_seen - self.first_seen
+
+    @property
+    def stationary(self) -> bool:
+        """Has this object stayed put for its whole life?
+
+        The distinction that matters for re-logging: a shelf that vanishes for
+        a moment and comes back is the same shelf, but two people standing in
+        the same doorway an hour apart are two sightings.
+        """
+        if self.first_box is None:
+            return True
+        return iou(self.first_box, self.box) >= 0.5
 
 
 @dataclass
@@ -74,13 +91,55 @@ class Tracker:
 
     def __init__(self, iou_threshold: float = 0.3,
                  max_missing_seconds: float = 2.0, min_hits: int = 3,
-                 min_seconds: float = 0.4):
+                 min_seconds: float = 0.4, rejoin_seconds: float = 900.0,
+                 rejoin_iou: float = 0.4):
         self.iou_threshold = iou_threshold
         self.max_missing_seconds = float(max_missing_seconds)
         self.min_hits = min_hits
         self.min_seconds = float(min_seconds)
+        # How long a stationary object is remembered after it disappears, and
+        # how well a new detection must overlap it to count as the same thing.
+        self.rejoin_seconds = float(rejoin_seconds)
+        self.rejoin_iou = float(rejoin_iou)
         self.tracks: Dict[int, Track] = {}
         self._ids = itertools.count(1)
+        # Closed stationary tracks, kept so the fixtures of a room are not
+        # logged afresh every time the detector blinks: (label, box, entry_id,
+        # first_seen, closed_at).
+        self._remembered: List[dict] = []
+
+    def remember(self, label: str, box: Box, entry_id: Optional[int],
+                 first_seen: float, closed_at: Optional[float] = None) -> None:
+        """Note a stationary object so a later sighting resumes its entry."""
+        if entry_id is None:
+            return
+        self._remembered = [r for r in self._remembered
+                            if r["entry_id"] != entry_id]
+        self._remembered.append({
+            "label": label, "box": tuple(box), "entry_id": entry_id,
+            "first_seen": first_seen,
+            "closed_at": closed_at if closed_at is not None else time.time(),
+        })
+
+    def _rejoin(self, det: Detection, now: float) -> Optional[dict]:
+        """Find a remembered stationary object matching this detection."""
+        if self.rejoin_seconds <= 0:
+            return None
+        best, best_score = None, 0.0
+        for entry in self._remembered:
+            if entry["label"] != det.label:
+                continue
+            if now - entry["closed_at"] > self.rejoin_seconds:
+                continue
+            score = iou(entry["box"], det.box)
+            if score >= self.rejoin_iou and score > best_score:
+                best, best_score = entry, score
+        return best
+
+    def _forget_stale(self, now: float) -> None:
+        self._remembered = [
+            r for r in self._remembered
+            if now - r["closed_at"] <= self.rejoin_seconds]
 
     def update(self, detections: Sequence[Detection]) -> Tuple[List[Track], List[Track]]:
         """Advance the tracker one frame.
@@ -124,14 +183,24 @@ class Tracker:
                 continue
             track_id = next(self._ids)
             fresh.add(track_id)
-            self.tracks[track_id] = Track(
+            track = Track(
                 track_id=track_id,
                 label=det.label,
                 box=det.box,
                 confidence=det.confidence,
                 first_seen=now,
                 last_seen=now,
+                first_box=det.box,
             )
+            # Something stationary we have logged before: reopen that entry
+            # rather than reporting the room's furniture as a new sighting.
+            remembered = self._rejoin(det, now)
+            if remembered is not None:
+                track.entry_id = remembered["entry_id"]
+                track.first_seen = remembered["first_seen"]
+                track.rejoined = True
+                self._remembered.remove(remembered)
+            self.tracks[track_id] = track
 
         closed: List[Track] = []
         for track_id, track in list(self.tracks.items()):
@@ -140,6 +209,11 @@ class Tracker:
             track.missing += 1
             if now - track.last_seen > self.max_missing_seconds:
                 closed.append(self.tracks.pop(track_id))
+                if track.stationary and track.entry_id is not None:
+                    self.remember(track.label, track.box, track.entry_id,
+                                  track.first_seen, now)
+
+        self._forget_stale(now)
 
         active = [t for t in self.tracks.values() if t.missing == 0]
         return active, closed

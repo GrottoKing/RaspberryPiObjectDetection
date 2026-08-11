@@ -449,6 +449,7 @@ The knobs you are most likely to want:
 | `detector.ignore_regions` | One patch of the view keeps fooling it → mask it |
 | `tracker.min_hits` | Flickery one-off sightings → raise to `5` |
 | `tracker.min_seconds` | Same object logged repeatedly → raise to `1.0` |
+| `tracker.rejoin_seconds` | How long a fixture is remembered so it is not re-logged. Raise for a static room, `0` to log every reappearance |
 | `tracker.max_missing_seconds` | Object re-logged when it briefly vanishes → raise to `4` |
 | `storage.max_entries` | How much history to keep before old rows and their images are deleted |
 
@@ -507,6 +508,20 @@ camera ──► detector ──► tracker ──► describe ──► SQLite 
   SD card cannot fill up.
 - **`objectlog/pipeline.py`** — the loop that ties it together, on its own
   thread. A failure backs off and retries rather than killing the service.
+
+### Not logging the same thing twice
+
+The room's fixtures — a shelf, a clock, a chair — should be logged once, not
+every time the detector blinks. When a track closes, the tracker remembers it
+if the object **stayed put** during its life, and a later detection in the same
+place resumes that entry instead of creating a new one. The memory is reseeded
+from the database at startup, so restarting the service does not re-log the
+furniture either.
+
+The "stayed put" test is what makes this safe. A person who walks through the
+frame twice is genuinely two sightings and gets two entries; only things that
+did not move are treated as the same object returning. Tune with
+`tracker.rejoin_seconds` (0 disables it).
 
 A track's snapshot is **replaced** while the object is still in view and the
 detector gets more confident about it (up to four times), so the image you end
@@ -575,6 +590,6 @@ that is the sensor, not the code.
 python3 -m unittest discover -s tests -v
 ```
 
-105 tests, no camera, model or accelerator required — the ONNX decoding is checked against a
+112 tests, no camera, model or accelerator required — the ONNX decoding is checked against a
 synthetic model with planted detections, and the pipeline runs end to end on
 the synthetic camera.

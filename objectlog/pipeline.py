@@ -42,7 +42,10 @@ class Pipeline:
             max_missing_seconds=float(cfg.get("tracker.max_missing_seconds", 2.0)),
             min_hits=int(cfg.get("tracker.min_hits", 3)),
             min_seconds=float(cfg.get("tracker.min_seconds", 0.4)),
+            rejoin_seconds=float(cfg.get("tracker.rejoin_seconds", 900.0)),
+            rejoin_iou=float(cfg.get("tracker.rejoin_iou", 0.4)),
         )
+        self._seed_tracker_memory()
 
         self._lock = threading.Lock()
         self._latest_frame: Optional[np.ndarray] = None
@@ -56,6 +59,25 @@ class Pipeline:
 
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
+
+    def _seed_tracker_memory(self) -> None:
+        """Carry the room's known fixtures across a restart.
+
+        Without this, stopping and starting the service logs every piece of
+        furniture again as though it had never been seen.
+        """
+        window = self.tracker.rejoin_seconds
+        if window <= 0:
+            return
+        try:
+            rows = self.store.recent_boxes(time.time() - window)
+        except Exception:
+            return
+        for row in rows:
+            self.tracker.remember(row["label"], tuple(row["box"]), row["id"],
+                                  row["first_seen"], row["last_seen"])
+        if rows:
+            print(f"[tracker] remembering {len(rows)} object(s) already logged")
 
     # ------------------------------------------------------------- lifecycle
 

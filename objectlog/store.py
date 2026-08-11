@@ -252,6 +252,32 @@ class Store:
             ).fetchall()
         return [self._row_to_dict(row) for row in rows]
 
+    def recent_boxes(self, since: float, limit: int = 200) -> List[Dict[str, Any]]:
+        """Entries seen recently, with their last known box.
+
+        Used to reseed the tracker's memory of stationary objects at startup,
+        so restarting the service does not log the whole room over again.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT id, label, box, first_seen, last_seen FROM sightings
+                   WHERE last_seen >= ? AND box IS NOT NULL
+                   ORDER BY last_seen DESC LIMIT ?""",
+                (float(since), limit),
+            ).fetchall()
+        out = []
+        for row in rows:
+            try:
+                box = json.loads(row["box"])
+            except (TypeError, ValueError):
+                continue
+            if not box or len(box) != 4:
+                continue
+            out.append({"id": row["id"], "label": row["label"], "box": box,
+                        "first_seen": row["first_seen"],
+                        "last_seen": row["last_seen"]})
+        return out
+
     def categories(self) -> List[Dict[str, Any]]:
         with self._lock:
             rows = self._conn.execute(

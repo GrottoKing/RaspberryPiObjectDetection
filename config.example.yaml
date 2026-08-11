@@ -80,6 +80,14 @@ tracker:
   # min_seconds is the more useful one at high frame rates.
   min_hits: 3
   min_seconds: 0.4
+  # Once a STATIONARY object has been logged, remember it for this long after
+  # it goes out of view. If it reappears within the window it resumes its
+  # existing entry rather than being reported as something new -- so the
+  # room's fixtures are logged once, not every time the detector blinks.
+  # Only applies to things that stayed put: a person who walks past twice is
+  # genuinely two sightings and gets two entries. Set 0 to disable.
+  rejoin_seconds: 900        # 15 minutes; raise for a room that rarely changes
+  rejoin_iou: 0.40           # how closely it must reappear in the same place
 
 storage:
   db_path: data/objectlog.db

@@ -223,6 +223,108 @@ class TestTracker(unittest.TestCase):
         self.assertEqual(len(tracker.confirmed()), 1)
 
 
+class TestStationaryMemory(unittest.TestCase):
+    """Not re-logging the room's fixtures every time they flicker.
+
+    A shelf that drops out of detection for a moment is the same shelf when it
+    comes back. Two people standing in the same doorway are not the same
+    person. The discriminator is whether the object moved during its life.
+    """
+
+    SHELF = (100.0, 100.0, 300.0, 400.0)
+
+    def _tracker(self, **kwargs):
+        params = dict(max_missing_seconds=0.05, min_hits=1, min_seconds=0.0,
+                      rejoin_seconds=60.0, rejoin_iou=0.4)
+        params.update(kwargs)
+        return Tracker(**params)
+
+    def _see(self, tracker, label, box, entry_id=None):
+        active, closed = tracker.update([Detection(label, 0.8, box)])
+        track = next(t for t in active if t.label == label)
+        if entry_id is not None and track.entry_id is None:
+            track.entry_id = entry_id      # as the pipeline would after logging
+        return track, closed
+
+    def test_a_stationary_object_resumes_its_entry(self):
+        tracker = self._tracker()
+        track, _ = self._see(tracker, "clock", self.SHELF, entry_id=7)
+        first_seen = track.first_seen
+
+        time.sleep(0.1)
+        tracker.update([])                      # it drops out; track closes
+        self.assertEqual(tracker.tracks, {})
+
+        track2, _ = self._see(tracker, "clock", self.SHELF)
+        self.assertTrue(track2.rejoined)
+        self.assertEqual(track2.entry_id, 7, "should reuse the existing entry")
+        self.assertEqual(track2.first_seen, first_seen,
+                         "first_seen belongs to the original sighting")
+
+    def test_a_moving_object_is_a_new_sighting_each_time(self):
+        tracker = self._tracker()
+        # A person walks across the view. Steps are small enough that the
+        # tracker follows them, but they end up far from where they started.
+        track, _ = self._see(tracker, "person", (0.0, 0.0, 100.0, 300.0),
+                             entry_id=11)
+        for offset in (40.0, 80.0, 120.0, 160.0, 200.0):
+            tracker.update([Detection("person", 0.8,
+                                      (offset, 0.0, offset + 100.0, 300.0))])
+        self.assertEqual(len(tracker.tracks), 1, "should have followed them")
+        self.assertFalse(track.stationary, "they crossed the frame")
+
+        time.sleep(0.1)
+        tracker.update([])                      # they leave
+        track2, _ = self._see(tracker, "person", (200.0, 0.0, 300.0, 300.0))
+        self.assertFalse(track2.rejoined,
+                         "a passer-by must not inherit an earlier entry")
+        self.assertIsNone(track2.entry_id)
+
+    def test_a_different_class_in_the_same_place_is_not_the_same_thing(self):
+        tracker = self._tracker()
+        self._see(tracker, "clock", self.SHELF, entry_id=7)
+        time.sleep(0.1)
+        tracker.update([])
+        track, _ = self._see(tracker, "tv", self.SHELF)
+        self.assertFalse(track.rejoined)
+
+    def test_memory_expires(self):
+        tracker = self._tracker(rejoin_seconds=0.1)
+        self._see(tracker, "clock", self.SHELF, entry_id=7)
+        time.sleep(0.15)
+        tracker.update([])                      # closes and is remembered
+        time.sleep(0.15)                        # ...then forgotten
+        tracker.update([])
+        track, _ = self._see(tracker, "clock", self.SHELF)
+        self.assertFalse(track.rejoined)
+
+    def test_can_be_disabled(self):
+        tracker = self._tracker(rejoin_seconds=0.0)
+        self._see(tracker, "clock", self.SHELF, entry_id=7)
+        time.sleep(0.1)
+        tracker.update([])
+        track, _ = self._see(tracker, "clock", self.SHELF)
+        self.assertFalse(track.rejoined)
+
+    def test_a_box_somewhere_else_is_not_the_same_object(self):
+        tracker = self._tracker()
+        self._see(tracker, "clock", self.SHELF, entry_id=7)
+        time.sleep(0.1)
+        tracker.update([])
+        track, _ = self._see(tracker, "clock", (900.0, 900.0, 1000.0, 1000.0))
+        self.assertFalse(track.rejoined)
+
+    def test_seeding_from_the_store_survives_a_restart(self):
+        # What the pipeline does at startup: a fresh tracker is told what is
+        # already logged, so restarting does not re-log the furniture.
+        tracker = self._tracker()
+        tracker.remember("clock", self.SHELF, 42, time.time() - 100,
+                         time.time())
+        track, _ = self._see(tracker, "clock", self.SHELF)
+        self.assertTrue(track.rejoined)
+        self.assertEqual(track.entry_id, 42)
+
+
 class TestDetectionFilter(unittest.TestCase):
     """The rules that suppress false positives."""
 

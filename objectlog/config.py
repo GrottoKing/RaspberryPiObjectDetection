@@ -68,6 +68,15 @@ DEFAULTS: Dict[str, Any] = {
         # earns a log entry. Raise either if you get flickery one-off entries.
         "min_hits": 3,
         "min_seconds": 0.4,
+        # How long a STATIONARY object is remembered after it goes out of
+        # view. If it comes back within this window it resumes its existing
+        # log entry instead of being reported as a new sighting -- so the
+        # room's fixtures are logged once, not every time the detector blinks.
+        # Only applies to things that stayed put: a person who walks through
+        # twice is genuinely two sightings. 0 disables it.
+        "rejoin_seconds": 900.0,
+        # How much a new detection must overlap the remembered one.
+        "rejoin_iou": 0.40,
     },
     "storage": {
         "db_path": "data/objectlog.db",
