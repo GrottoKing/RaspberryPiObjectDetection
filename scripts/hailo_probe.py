@@ -128,16 +128,28 @@ def check_environment() -> bool:
                   f"different chip -- harmless, but it will not help)")
 
     missing = firmware_failure()
-    if missing:
+    wrong_stack = wrong_stack_installed(arch)
+    if missing or wrong_stack:
         print()
-        print("FIRMWARE LOAD FAILED. The driver found the card and then could")
-        print(f"not load its firmware: {missing}")
-        print("Error -2 means the file is simply not on disk. Check:")
-        print("    ls -l /lib/firmware/hailo/")
-        print("    dpkg -l | grep -i hailo")
-        print("    apt-cache search hailo")
-        print("This is a missing package, not a broken card. See the README")
-        print("section \"firmware load failed\".")
+        if missing:
+            print("FIRMWARE LOAD FAILED. The driver found the card and then")
+            print(f"could not load its firmware: {missing}")
+            print("Error -2 means the file is simply not on disk.")
+        if wrong_stack:
+            print()
+            print(f"CAUSE: this is a {arch}, but the firmware for it is not")
+            print("installed. The Hailo-8 and Hailo-10 stacks are separate")
+            print("packages -- note that `hailo-all` is Hailo-8 only, despite")
+            print("the name. Install the right one:")
+            print()
+            print(f"    sudo apt install -y {wrong_stack}")
+            print("    sudo reboot")
+            print()
+            print("apt will remove the Hailo-8 packages; that is expected, as")
+            print("both provide the same Python module. hailo-models, which")
+            print("supplies the .hef files, is separate and stays.")
+        else:
+            print("Check:  ls -l /lib/firmware/hailo/  and  dpkg -l | grep hailo")
 
     print(f"architecture : {arch or 'could not determine'}"
           f"{'   <-- models must carry the matching suffix' if arch else ''}")
@@ -337,6 +349,38 @@ def driver_loaded() -> bool:
     return bool(loaded_modules())
 
 
+# The Hailo-8 and Hailo-10 software stacks are separate packages that provide
+# the same Python module, so only one can be installed. Putting the Hailo-8
+# stack on a Hailo-10H card is an easy mistake -- `hailo-all` sounds
+# comprehensive but its description is literally "Hailo-8 support".
+STACK_FOR_ARCH = {
+    "HAILO10H": ("hailo-h10-all", "hailo10h"),
+    "HAILO15H": ("hailo-h10-all", "hailo15h"),
+}
+
+
+def wrong_stack_installed(arch: Optional[str]) -> Optional[str]:
+    """Detect the Hailo-8 stack sitting on a Hailo-10 card.
+
+    Returns the apt package that should be installed instead, or None.
+    """
+    if not arch:
+        return None
+    entry = STACK_FOR_ARCH.get(arch)
+    if not entry:
+        return None
+    package, firmware_dir = entry
+
+    # If the firmware this chip needs is present, the stack is fine.
+    if os.path.isdir(os.path.join("/lib/firmware/hailo", firmware_dir)):
+        return None
+
+    ok, installed = run(["dpkg-query", "-W", "-f=${Package}\n"])
+    if ok and package.split("-all")[0] + "-hailort" in installed:
+        return None
+    return package
+
+
 def firmware_failure() -> Optional[str]:
     """Find a firmware-load failure in the kernel log, and the file it wanted.
 
@@ -375,8 +419,19 @@ def diagnose_no_device() -> None:
     nodes = device_nodes()
     loaded = driver_loaded()
     missing = firmware_failure()
+    wrong_stack = wrong_stack_installed(detect_architecture())
 
     print()
+    if wrong_stack:
+        print("The software stack does not match the card. Install the right")
+        print("one and reboot:")
+        print()
+        print(f"    sudo apt install -y {wrong_stack}")
+        print("    sudo reboot")
+        print()
+        print("See section 1 for the detail.")
+        return
+
     if missing:
         print("The driver reached the card but could not load its firmware:")
         print(f"    {missing}")

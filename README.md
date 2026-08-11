@@ -175,6 +175,32 @@ detector:
   hailo_letterbox: false
 ```
 
+### Wrong software stack: `hailo-all` is Hailo-8 only
+
+The most likely reason a Hailo-10H never starts. Despite the name, the
+`hailo-all` metapackage is **"Hailo-8 support"** — installing it on a
+Hailo-10H gives you a driver that finds the card and then cannot load firmware
+into it, because only the Hailo-8 firmware is on disk.
+
+```bash
+ls -l /lib/firmware/hailo/     # only hailo8_fw*.bin? that is the problem
+```
+
+```bash
+sudo apt install -y hailo-h10-all
+sudo reboot
+```
+
+apt will remove `hailo-all`, `hailort` and `python3-hailort` in the process.
+That is expected — the two stacks provide the same Python module and cannot be
+installed together. `hailo-models`, which supplies the `.hef` files, is a
+separate package and is unaffected.
+
+| Chip | Metapackage | Runtime | Driver module |
+|---|---|---|---|
+| Hailo-10H | `hailo-h10-all` | `h10-hailort` | `hailo1x_pci` |
+| Hailo-8 family | `hailo-all` | `hailort` | `hailo_pci` |
+
 ### "Firmware load failed" / no /dev/hailo0
 
 If `dmesg | grep -i hailo` shows something like:
