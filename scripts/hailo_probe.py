@@ -551,11 +551,30 @@ def main(argv=None) -> int:
     elif not target:
         print("Get a compiled detector for this chip, then re-run with --hef.")
     else:
-        print("If sections 3 and 4 look sane, enable the backend:")
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        config_path = os.path.join(root, "config.yaml")
+        exists = os.path.exists(config_path)
+
+        print("If sections 3 and 4 look sane, try it live first -- no config,")
+        print("nothing to undo, Ctrl+C to stop:")
+        print()
+        print("    sudo systemctl stop objectlog")
+        print(f"    ./.venv/bin/python run.py --backend hailo \\")
+        print(f"        --hef {target} --fps 15")
+        print()
+        print(f"To make it permanent, edit {config_path}")
+        if exists:
+            print("(which already exists -- merge these keys into it, do not")
+            print(" paste a second `detector:` or `camera:` heading):")
+        else:
+            print("(which does not exist yet -- create it with this):")
         print()
         print("    detector:")
         print("      backend: hailo")
         print(f"      hef: {target}")
+        print("      confidence: 0.45")
+        print("    camera:")
+        print("      fps_limit: 15")
         print()
         print("Then: sudo systemctl restart objectlog")
     return 0
