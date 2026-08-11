@@ -322,3 +322,149 @@ class TestBackendSelection(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestInferModelRunner(unittest.TestCase):
+    """The HailoRT 4.18+/5.x path, against a stand-in for the runtime.
+
+    HailoRT is not installable off a Pi, so the API surface is faked here --
+    the same shapes and call sequence a Hailo-10H presents. This cannot prove
+    the real device agrees, but it does prove the runner drives the documented
+    API correctly and that a real model's output shape decodes to the right
+    pixels, which is where the bugs have actually been.
+    """
+
+    OUT_SHAPE = (80, 5, 100)
+
+    def setUp(self):
+        import tempfile
+        import types
+
+        out_shape = self.OUT_SHAPE
+
+        class Stream:
+            def __init__(self, shape):
+                self.shape = shape
+                self.buffer = None
+
+            def set_format_type(self, _t):
+                pass
+
+            def set_buffer(self, b):
+                self.buffer = b
+
+            def get_buffer(self):
+                out = np.zeros(out_shape, np.float32)
+                # person, bbox-first, as the real yolov11m_h10 emits.
+                out[0][:, 0] = [0.1, 0.2, 0.5, 0.6, 0.88]
+                return out
+
+        class Bindings:
+            def __init__(self):
+                self._in = Stream((640, 640, 3))
+                self._out = Stream(out_shape)
+
+            def input(self, name=None):
+                return self._in
+
+            def output(self, name=None):
+                return self._out
+
+        class Configured:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def create_bindings(self):
+                return Bindings()
+
+            def run(self, _bindings, _timeout):
+                pass
+
+        class Model:
+            output_names = ["yolov11m/yolov8_nms_postprocess"]
+
+            def set_batch_size(self, _n):
+                pass
+
+            def input(self, name=None):
+                return Stream((640, 640, 3))
+
+            def output(self, name=None):
+                return Stream(out_shape)
+
+            def configure(self):
+                return Configured()
+
+        class Device:
+            @staticmethod
+            def create_params():
+                return types.SimpleNamespace(scheduling_algorithm=None)
+
+            def __init__(self, params=None):
+                pass
+
+            def create_infer_model(self, _path):
+                return Model()
+
+            def release(self):
+                pass
+
+        fake = types.ModuleType("hailo_platform")
+        fake.VDevice = Device
+        fake.FormatType = types.SimpleNamespace(UINT8="u8", FLOAT32="f32")
+        fake.HailoSchedulingAlgorithm = types.SimpleNamespace(ROUND_ROBIN=1)
+        self._saved = sys.modules.get("hailo_platform")
+        sys.modules["hailo_platform"] = fake
+
+        self.dir = tempfile.mkdtemp(prefix="objectlog-hef-")
+        self.hef = os.path.join(self.dir, "yolov11m_h10.hef")
+        with open(self.hef, "wb") as handle:
+            handle.write(b"\0" * 100)
+
+    def tearDown(self):
+        import shutil
+
+        if self._saved is None:
+            sys.modules.pop("hailo_platform", None)
+        else:
+            sys.modules["hailo_platform"] = self._saved
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_prefers_the_infermodel_api(self):
+        from objectlog.backends.hailo_backend import debug_infer
+
+        api, results = debug_infer(self.hef)
+        self.assertEqual(api, "InferModel")
+        self.assertEqual(list(results), ["yolov11m/yolov8_nms_postprocess"])
+
+    def test_end_to_end_detection_lands_on_the_right_pixels(self):
+        from objectlog.backends.hailo_backend import HailoDetector
+
+        detector = HailoDetector(hef_path=self.hef, confidence=0.4)
+        self.addCleanup(detector.close)
+        self.assertIn("InferModel", detector.description)
+
+        found = detector.detect(np.zeros((720, 1280, 3), dtype=np.uint8))
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0].label, "person")
+        self.assertAlmostEqual(found[0].confidence, 0.88, places=4)
+
+        # 1280x720 letterboxed into 640x640: scale 0.5, 140px vertical pad.
+        # x: 0.2..0.6 of 640 -> 128..384 -> /0.5 -> 256..768
+        # y: 0.1..0.5 of 640 -> 64..320 -> minus pad, /0.5 -> clamped 0..360
+        for actual, expected in zip(found[0].box, (256.0, 0.0, 768.0, 360.0)):
+            self.assertAlmostEqual(actual, expected, delta=1.5)
+
+    def test_detection_filter_still_applies(self):
+        from objectlog.backends.base import DetectionFilter
+        from objectlog.backends.hailo_backend import HailoDetector
+
+        detector = HailoDetector(
+            hef_path=self.hef, confidence=0.4,
+            detection_filter=DetectionFilter(excluded=["person"]))
+        self.addCleanup(detector.close)
+        self.assertEqual(
+            detector.detect(np.zeros((720, 1280, 3), dtype=np.uint8)), [])

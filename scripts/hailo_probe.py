@@ -48,6 +48,86 @@ def run(command: list) -> tuple:
         return False, str(exc)
 
 
+# The two driver families are not interchangeable. hailo_pci drives Hailo-8
+# parts; hailo1x_pci drives Hailo-10H.
+DRIVER_FOR_ARCH = {
+    "HAILO10H": "hailo1x_pci",
+    "HAILO15H": "hailo1x_pci",
+    "HAILO8": "hailo_pci",
+    "HAILO8L": "hailo_pci",
+    "HAILO8R": "hailo_pci",
+}
+
+# The Hailo-8 and Hailo-10 stacks are separate packages providing the same
+# Python module, so only one can be installed. `hailo-all` sounds
+# comprehensive but its own description is "Hailo-8 support".
+STACK_FOR_ARCH = {
+    "HAILO10H": ("hailo-h10-all", "hailo10h"),
+    "HAILO15H": ("hailo-h10-all", "hailo15h"),
+}
+
+
+def device_nodes() -> list:
+    import glob as _glob
+
+    return sorted(_glob.glob("/dev/hailo*"))
+
+
+def loaded_modules() -> list:
+    try:
+        with open("/proc/modules", "r", encoding="utf-8") as handle:
+            return [line.split()[0] for line in handle
+                    if "hailo" in line.split()[0].lower()]
+    except OSError:
+        return []
+
+
+def driver_loaded() -> bool:
+    return bool(loaded_modules())
+
+
+def wrong_stack_installed(arch: Optional[str]) -> Optional[str]:
+    """Detect the Hailo-8 stack sitting on a Hailo-10 card."""
+    if not arch:
+        return None
+    entry = STACK_FOR_ARCH.get(arch)
+    if not entry:
+        return None
+    package, firmware_dir = entry
+    if os.path.isdir(os.path.join("/lib/firmware/hailo", firmware_dir)):
+        return None
+    ok, installed = run(["dpkg-query", "-W", "-f=${Package}\n"])
+    if ok and package.split("-all")[0] + "-hailort" in installed:
+        return None
+    return package
+
+
+def firmware_failure() -> Optional[str]:
+    """Find a firmware-load failure in the kernel log, and the file it wanted.
+
+    The driver probing successfully and then failing to load firmware is a
+    different fault from the driver being absent, and easy to miss because
+    everything up to that point looks healthy.
+    """
+    ok, log = run(["dmesg"])
+    if not ok:
+        return None
+    missing = None
+    failed = False
+    for line in log.splitlines():
+        lowered = line.lower()
+        if "hailo" not in lowered:
+            continue
+        if "failed with error -2 to write file" in lowered or (
+                "failed" in lowered and ".bin" in lowered):
+            for part in line.split():
+                if part.endswith(".bin"):
+                    missing = part
+        if "firmware load failed" in lowered or "failed activating board" in lowered:
+            failed = True
+    return (missing or "(firmware file not named in the log)") if failed else None
+
+
 def check_venv() -> None:
     """The service runs .venv/bin/python -- that is what must find the bindings.
 
@@ -274,140 +354,50 @@ def inspect_hef(hef_path: str) -> None:
 def test_inference(hef_path: str) -> None:
     rule(f"4. ONE INFERENCE — {os.path.basename(hef_path)}")
     try:
-        import numpy as np
-        from hailo_platform import (ConfigureParams, FormatType, HEF,
-                                    HailoStreamInterface, InferVStreams,
-                                    InputVStreamParams, OutputVStreamParams,
-                                    VDevice)
+        from objectlog.backends.hailo_backend import debug_infer
     except ImportError as exc:
-        print(f"cannot import what is needed: {exc}")
+        print(f"cannot import the backend: {exc}")
         return
 
     try:
-        hef = HEF(hef_path)
-        with VDevice() as target:
-            params = ConfigureParams.create_from_hef(
-                hef, interface=HailoStreamInterface.PCIe)
-            network_group = target.configure(hef, params)[0]
-            network_params = network_group.create_params()
-
-            input_info = hef.get_input_vstream_infos()[0]
-            height, width, channels = input_info.shape
-            print(f"feeding a {width}x{height}x{channels} test frame")
-
-            in_params = InputVStreamParams.make(network_group,
-                                                format_type=FormatType.UINT8)
-            out_params = OutputVStreamParams.make(network_group,
-                                                  format_type=FormatType.FLOAT32)
-            frame = np.zeros((1, height, width, channels), dtype=np.uint8)
-
-            with InferVStreams(network_group, in_params,
-                               out_params) as pipeline:
-                with network_group.activate(network_params):
-                    results = pipeline.infer({input_info.name: frame})
-
-        print()
-        print("RESULT STRUCTURE — this is what the backend has to read:")
-        for name, value in results.items():
-            print(f"  output '{name}': {type(value).__name__}")
-            described = describe_value(value, indent=4, depth=0)
-            if not described:
-                print("    (empty)")
+        # Deliberately the same code path the detector uses, so this cannot
+        # report something different from what actually runs.
+        api, results = debug_infer(hef_path)
     except Exception as exc:
         print(f"inference failed: {type(exc).__name__}: {exc}")
-        if "PHYSICAL_DEVICES" in str(exc) or "74" in str(exc):
+        message = str(exc)
+        if "PHYSICAL_DEVICES" in message or "error: 74" in message:
             diagnose_no_device()
+        elif "NOT_IMPLEMENTED" in message or "error: 7" in message:
+            print()
+            print("HAILO_NOT_IMPLEMENTED means this runtime does not offer the")
+            print("API that was tried. Both the modern InferModel interface and")
+            print("the legacy vstream one failed -- please report the message")
+            print("above along with your hailo_platform version.")
+        return
 
+    print(f"API used: {api}")
+    print()
+    print("RESULT STRUCTURE — this is what the decoder has to read:")
+    for name, value in results.items():
+        print(f"  output '{name}': {type(value).__name__}")
+        if not describe_value(value, indent=4, depth=0):
+            print("    (could not describe)")
 
-# The two driver families are not interchangeable. hailo_pci drives Hailo-8
-# parts; hailo1x_pci drives Hailo-10H. Loading the wrong one does nothing.
-DRIVER_FOR_ARCH = {
-    "HAILO10H": "hailo1x_pci",
-    "HAILO15H": "hailo1x_pci",
-    "HAILO8": "hailo_pci",
-    "HAILO8L": "hailo_pci",
-    "HAILO8R": "hailo_pci",
-}
-
-
-def device_nodes() -> list:
-    import glob as _glob
-
-    return sorted(_glob.glob("/dev/hailo*"))
-
-
-def loaded_modules() -> list:
+    # Show what the decoder makes of it, since that is the real question.
     try:
-        with open("/proc/modules", "r", encoding="utf-8") as handle:
-            return [line.split()[0] for line in handle
-                    if "hailo" in line.split()[0].lower()]
-    except OSError:
-        return []
+        from objectlog.backends.hailo_backend import decode_nms_output
+        from objectlog.labels import COCO_CLASSES
 
-
-def driver_loaded() -> bool:
-    return bool(loaded_modules())
-
-
-# The Hailo-8 and Hailo-10 software stacks are separate packages that provide
-# the same Python module, so only one can be installed. Putting the Hailo-8
-# stack on a Hailo-10H card is an easy mistake -- `hailo-all` sounds
-# comprehensive but its description is literally "Hailo-8 support".
-STACK_FOR_ARCH = {
-    "HAILO10H": ("hailo-h10-all", "hailo10h"),
-    "HAILO15H": ("hailo-h10-all", "hailo15h"),
-}
-
-
-def wrong_stack_installed(arch: Optional[str]) -> Optional[str]:
-    """Detect the Hailo-8 stack sitting on a Hailo-10 card.
-
-    Returns the apt package that should be installed instead, or None.
-    """
-    if not arch:
-        return None
-    entry = STACK_FOR_ARCH.get(arch)
-    if not entry:
-        return None
-    package, firmware_dir = entry
-
-    # If the firmware this chip needs is present, the stack is fine.
-    if os.path.isdir(os.path.join("/lib/firmware/hailo", firmware_dir)):
-        return None
-
-    ok, installed = run(["dpkg-query", "-W", "-f=${Package}\n"])
-    if ok and package.split("-all")[0] + "-hailort" in installed:
-        return None
-    return package
-
-
-def firmware_failure() -> Optional[str]:
-    """Find a firmware-load failure in the kernel log, and the file it wanted.
-
-    The driver probing successfully and then failing to load firmware is a
-    completely different fault from the driver being absent, and it is easy to
-    miss because everything up to that point looks healthy.
-    """
-    ok, log = run(["dmesg"])
-    if not ok:
-        return None
-    missing = None
-    failed = False
-    for line in log.splitlines():
-        lowered = line.lower()
-        if "hailo" not in lowered:
-            continue
-        if "failed with error -2 to write file" in lowered or (
-                "failed" in lowered and ".bin" in lowered):
-            parts = line.split()
-            for part in parts:
-                if part.endswith(".bin"):
-                    missing = part
-        if "firmware load failed" in lowered or "failed activating board" in lowered:
-            failed = True
-    if failed:
-        return missing or "(firmware file not named in the log)"
-    return None
+        total = 0
+        for value in results.values():
+            total += len(decode_nms_output(value, COCO_CLASSES, 0.0, 640, 640))
+        print()
+        print(f"decoder reads {total} candidate boxes from a blank frame")
+        print("(zero or near-zero is correct here -- a blank frame contains")
+        print(" nothing. What matters is that it did not raise.)")
+    except Exception as exc:
+        print(f"\ndecoding raised: {type(exc).__name__}: {exc}")
 
 
 def diagnose_no_device() -> None:

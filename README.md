@@ -81,12 +81,19 @@ If you have a Hailo accelerator, use it. It runs models far larger than the Pi's
 CPU can manage, in a fraction of the time, and the false positives that plague
 `yolo11n` largely go away because you can afford a proper model.
 
-### 1. Install the runtime
+### 1. Install the runtime — mind which chip you have
+
+**`hailo-all` is the Hailo-8 package**, despite the name. On a Hailo-10H it
+installs a driver that finds the card and then cannot start it.
 
 ```bash
-sudo apt update && sudo apt install -y hailo-all
+sudo apt update
+sudo apt install -y hailo-h10-all      # Hailo-10H  (AI HAT+, 40 TOPS)
+# sudo apt install -y hailo-all        # Hailo-8 / 8L
 sudo reboot
 ```
+
+Not sure which you have? `lspci | grep -i hailo` names the chip.
 
 For full bandwidth to the accelerator, enable PCIe Gen 3 — add this to
 `/boot/firmware/config.txt` and reboot:
@@ -262,12 +269,20 @@ sudo reboot
 If `/dev/hailo0` *does* exist and you still get this error, then something is
 genuinely holding it — the probe will name the process.
 
+### Two HailoRT APIs
+
+HailoRT 5.x (Hailo-10H) implements the `InferModel` interface; the older
+vstream calls return `HAILO_NOT_IMPLEMENTED`. HailoRT 4.x (Hailo-8) is the
+other way round. The backend tries `InferModel` first and falls back, and the
+probe reports which one was used, so either generation works unchanged.
+
 ### Honest status
 
 The decoding logic is unit-tested against every output shape HailoRT is known
-to produce. **The device I/O is not** — it was written without access to
-hardware, so treat the first run as a test. `hailo_probe.py` exists to make any
-mismatch obvious rather than silent.
+to produce, and the runner is tested end to end against a stand-in for the
+5.x API. **No test touches a real accelerator** — HailoRT cannot be installed
+off a Pi. `hailo_probe.py` runs the same code path the detector does, so what
+it reports is what actually happens.
 
 ---
 

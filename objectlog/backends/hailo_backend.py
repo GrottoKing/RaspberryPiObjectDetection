@@ -268,6 +268,123 @@ def decode_nms_output(raw, class_names: Sequence[str], confidence: float,
     return detections
 
 
+class _InferModelRunner:
+    """HailoRT 4.18+ / 5.x interface.
+
+    The Hailo-10H runtime implements only this one; the older vstream calls
+    return HAILO_NOT_IMPLEMENTED.
+    """
+
+    api = "InferModel"
+
+    def __init__(self, hef_path: str):
+        from hailo_platform import FormatType, VDevice
+
+        try:
+            from hailo_platform import HailoSchedulingAlgorithm
+
+            params = VDevice.create_params()
+            params.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
+            self._vdevice = VDevice(params)
+        except Exception:
+            # Older builds have no scheduler parameters.
+            self._vdevice = VDevice()
+
+        self._model = self._vdevice.create_infer_model(hef_path)
+        self._model.set_batch_size(1)
+        self._model.input().set_format_type(FormatType.UINT8)
+        for name in self._model.output_names:
+            self._model.output(name).set_format_type(FormatType.FLOAT32)
+
+        shape = tuple(self._model.input().shape)
+        self.input_height, self.input_width = int(shape[0]), int(shape[1])
+
+        # configure() is a context manager; hold it open for the process
+        # lifetime rather than reconfiguring the device every frame.
+        self._configured_cm = self._model.configure()
+        self._configured = self._configured_cm.__enter__()
+
+    def infer(self, frame: np.ndarray) -> dict:
+        bindings = self._configured.create_bindings()
+        bindings.input().set_buffer(np.ascontiguousarray(frame, dtype=np.uint8))
+
+        buffers = {}
+        for name in self._model.output_names:
+            shape = tuple(int(v) for v in self._model.output(name).shape)
+            buffer = np.empty(shape, dtype=np.float32)
+            buffers[name] = buffer
+            bindings.output(name).set_buffer(buffer)
+
+        self._configured.run([bindings], 10000)
+        return {name: bindings.output(name).get_buffer()
+                for name in self._model.output_names}
+
+    def close(self) -> None:
+        try:
+            self._configured_cm.__exit__(None, None, None)
+        except Exception:
+            pass
+        try:
+            self._vdevice.release()
+        except Exception:
+            pass
+
+
+class _VStreamRunner:
+    """Legacy HailoRT 4.x interface, for Hailo-8 era installs."""
+
+    api = "InferVStreams"
+
+    def __init__(self, hef_path: str):
+        from hailo_platform import (ConfigureParams, FormatType, HEF,
+                                    HailoStreamInterface, InferVStreams,
+                                    InputVStreamParams, OutputVStreamParams,
+                                    VDevice)
+
+        self._InferVStreams = InferVStreams
+        self._hef = HEF(hef_path)
+        self._device = VDevice()
+        params = ConfigureParams.create_from_hef(
+            self._hef, interface=HailoStreamInterface.PCIe)
+        self._group = self._device.configure(self._hef, params)[0]
+        self._group_params = self._group.create_params()
+
+        self._input_info = self._hef.get_input_vstream_infos()[0]
+        self.input_height, self.input_width = self._input_info.shape[:2]
+
+        self._in_params = InputVStreamParams.make(self._group,
+                                                  format_type=FormatType.UINT8)
+        self._out_params = OutputVStreamParams.make(self._group,
+                                                    format_type=FormatType.FLOAT32)
+
+    def infer(self, frame: np.ndarray) -> dict:
+        batch = frame[None].astype(np.uint8)
+        with self._InferVStreams(self._group, self._in_params,
+                                 self._out_params) as pipeline:
+            with self._group.activate(self._group_params):
+                return pipeline.infer({self._input_info.name: batch})
+
+    def close(self) -> None:
+        try:
+            self._device.release()
+        except Exception:
+            pass
+
+
+def open_runner(hef_path: str):
+    """Open the device with whichever API this runtime actually implements."""
+    errors = []
+    for runner_class in (_InferModelRunner, _VStreamRunner):
+        try:
+            return runner_class(hef_path)
+        except Exception as exc:
+            errors.append(f"{runner_class.api}: {type(exc).__name__}: {exc}")
+    raise RuntimeError(
+        "could not open the Hailo device with either API --\n  "
+        + "\n  ".join(errors)
+        + "\nRun scripts/hailo_probe.py for a fuller picture.")
+
+
 class HailoDetector(DetectorBackend):
     name = "hailo"
 
@@ -276,14 +393,13 @@ class HailoDetector(DetectorBackend):
                  labels: Optional[Sequence[str]] = None,
                  letterbox: bool = True, **_ignored):
         try:
-            from hailo_platform import (ConfigureParams, FormatType, HEF,
-                                        HailoStreamInterface, InferVStreams,
-                                        InputVStreamParams,
-                                        OutputVStreamParams, VDevice)
+            import hailo_platform  # noqa: F401
         except ImportError as exc:
             raise RuntimeError(
                 "hailo_platform is not importable. It comes from apt, not "
-                "pip:\n"
+                "pip. On a Hailo-10H:\n"
+                "    sudo apt install -y hailo-h10-all\n"
+                "on a Hailo-8:\n"
                 "    sudo apt install -y hailo-all\n"
                 "and the virtualenv must be able to see system packages "
                 "(python3 -m venv --system-site-packages .venv).\n"
@@ -298,32 +414,19 @@ class HailoDetector(DetectorBackend):
                 "Run scripts/hailo_probe.py to see what is installed."
             )
         self.hef_path = resolved
-
-        self._InferVStreams = InferVStreams
         self.confidence = confidence
         self.filter = detection_filter or DetectionFilter()
         self.class_names = list(labels) if labels else list(COCO_CLASSES)
         self.letterbox = letterbox
 
-        self.hef = HEF(resolved)
-        self._device = VDevice()
-        params = ConfigureParams.create_from_hef(
-            self.hef, interface=HailoStreamInterface.PCIe)
-        self._network_group = self._device.configure(self.hef, params)[0]
-        self._network_params = self._network_group.create_params()
-
-        self._input_info = self.hef.get_input_vstream_infos()[0]
-        self.input_height, self.input_width = self._input_info.shape[:2]
-
-        self._in_params = InputVStreamParams.make(self._network_group,
-                                                  format_type=FormatType.UINT8)
-        self._out_params = OutputVStreamParams.make(self._network_group,
-                                                    format_type=FormatType.FLOAT32)
+        self._runner = open_runner(resolved)
+        self.input_height = self._runner.input_height
+        self.input_width = self._runner.input_width
 
         self.description = (
             f"hailo · {os.path.basename(resolved)} · "
-            f"{self.input_width}x{self.input_height} · conf {confidence:g} · "
-            f"{len(self.class_names)} classes"
+            f"{self.input_width}x{self.input_height} · {self._runner.api} · "
+            f"conf {confidence:g} · {len(self.class_names)} classes"
         )
         extra = self.filter.describe()
         if extra:
@@ -356,12 +459,7 @@ class HailoDetector(DetectorBackend):
     def detect(self, frame: np.ndarray) -> List[Detection]:
         height, width = frame.shape[:2]
         prepared, scale_x, scale_y, pad_x, pad_y = self._prepare(frame)
-        batch = prepared[None].astype(np.uint8)
-
-        with self._InferVStreams(self._network_group, self._in_params,
-                                 self._out_params) as pipeline:
-            with self._network_group.activate(self._network_params):
-                results = pipeline.infer({self._input_info.name: batch})
+        results = self._runner.infer(prepared)
 
         detections: List[Detection] = []
         for raw in results.values():
@@ -371,10 +469,7 @@ class HailoDetector(DetectorBackend):
                 input_width=self.input_width, input_height=self.input_height))
 
         if not detections and results:
-            # An empty result is normal. A result we could not read at all is
-            # not -- say so rather than quietly logging nothing forever.
             self._warn_if_unreadable(results)
-
         return self.filter.apply(detections, frame.shape)
 
     _warned = False
@@ -393,6 +488,21 @@ class HailoDetector(DetectorBackend):
 
     def close(self) -> None:
         try:
-            self._device.release()
+            self._runner.close()
         except Exception:
             pass
+
+
+def debug_infer(hef_path: str):
+    """Run one inference on a blank frame; used by scripts/hailo_probe.py.
+
+    The probe deliberately goes through the same code path the backend uses,
+    so what it reports cannot drift from what actually runs.
+    """
+    runner = open_runner(hef_path)
+    try:
+        frame = np.zeros((runner.input_height, runner.input_width, 3),
+                         dtype=np.uint8)
+        return runner.api, runner.infer(frame)
+    finally:
+        runner.close()
